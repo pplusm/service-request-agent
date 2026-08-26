@@ -221,6 +221,7 @@ def test_demo_005_invalid_model_output_returns_valid_review_result() -> None:
         ),
         diagnostics=Diagnostics(
             knowledge_hit=False,
+            model_call_success=True,
             model_output_parse_success=False,
             raw_model_output=raw_model_output,
             errors=["Demo model output could not be parsed as JSON."],

@@ -171,14 +171,46 @@ class Diagnostics(StrictSchema):
     # 知识库是否命中；未命中时后续校验会强制人工复核。
     knowledge_hit: bool = False
 
-    # 大模型输出能否被解析为预期 JSON。
-    model_output_parse_success: bool = True
+    # None 表示本次未调用模型；False 表示模型服务调用失败。
+    model_call_success: bool | None = None
 
-    # 解析失败时保留原始输出，供人工定位问题；正常情况下可以为 None。
+    # None 表示没有模型输出可解析；False 表示原始输出未通过 Pydantic 校验。
+    model_output_parse_success: bool | None = None
+
+    # 只有解析失败时才保留原始输出，供人工定位问题。
     raw_model_output: str | None = Field(default=None, max_length=5000)
 
     # 记录系统错误摘要，例如模型调用失败或规则冲突。
     errors: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_model_diagnostics(self) -> "Diagnostics":
+        """保证模型调用、解析状态与原始输出之间没有矛盾。"""
+
+        if (
+            self.model_output_parse_success is not None
+            and self.model_call_success is not True
+        ):
+            raise ValueError(
+                "model_output_parse_success requires a successful model call"
+            )
+
+        if (
+            self.raw_model_output is not None
+            and self.model_output_parse_success is not False
+        ):
+            raise ValueError(
+                "raw_model_output is only allowed when model parsing fails"
+            )
+
+        if (
+            self.model_output_parse_success is False
+            and self.raw_model_output is None
+        ):
+            raise ValueError(
+                "raw_model_output is required when model parsing fails"
+            )
+        return self
 
 
 class ServiceCaseResult(StrictSchema):
@@ -221,8 +253,12 @@ class ServiceCaseResult(StrictSchema):
         if not self.knowledge_references or not self.diagnostics.knowledge_hit:
             required_reasons.add(ReviewReason.KNOWLEDGE_NOT_FOUND)
 
+        # 模型服务调用失败时，必须交由人工判断，不能伪装成正常分类结果。
+        if self.diagnostics.model_call_success is False:
+            required_reasons.add(ReviewReason.LLM_ERROR)
+
         # 模型返回内容无法解析为 JSON 时，必须交给人工查看原始输出。
-        if not self.diagnostics.model_output_parse_success:
+        if self.diagnostics.model_output_parse_success is False:
             required_reasons.add(ReviewReason.INVALID_MODEL_OUTPUT)
 
             if self.diagnostics.raw_model_output is None:

@@ -2,7 +2,7 @@
 
 import json
 
-from app.agent.result_parser import parse_service_case_result
+from app.agent.result_parser import build_knowledge_miss_result, parse_service_case_result
 from app.llm.mock_provider import MockLLMProvider
 from app.llm.provider import ChatMessage, StructuredGenerationRequest
 from app.schemas.models import (
@@ -76,6 +76,7 @@ def build_valid_result_payload() -> dict[str, object]:
         },
         "diagnostics": {
             "knowledge_hit": True,
+            "model_call_success": True,
             "model_output_parse_success": True,
             "raw_model_output": None,
             "errors": [],
@@ -129,6 +130,16 @@ def test_parser_turns_invalid_json_into_human_review_result() -> None:
     assert ReviewReason.INVALID_MODEL_OUTPUT in result.review.reasons
     assert ReviewReason.KNOWLEDGE_NOT_FOUND in result.review.reasons
     assert result.model_dump(mode="json")["request_id"] == "demo_001"
+
+
+def test_knowledge_miss_uses_a_neutral_risk_summary() -> None:
+    """知识未命中时，兜底文案不应错误地暗示模型已经返回过内容。"""
+
+    result = build_knowledge_miss_result(build_service_request())
+
+    assert result.risk.summary == "当前无法安全评估风险，需人工复核。"
+    assert result.diagnostics.model_call_success is None
+    assert result.diagnostics.model_output_parse_success is None
 
 
 def test_parser_rejects_model_invented_knowledge_reference() -> None:
