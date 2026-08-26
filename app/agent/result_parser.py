@@ -64,6 +64,45 @@ def build_knowledge_miss_result(
     )
 
 
+def build_input_validation_result(
+    *,
+    request_id: str,
+    missing_fields: list[str],
+    validation_errors: list[str],
+) -> ServiceCaseResult:
+    """将 API 输入字段缺失或格式无效转为统一的人工复核结果。"""
+
+    # ServiceCaseResult 不返回原始文本；这里的占位文本只用于复用统一兜底构造逻辑。
+    placeholder_request = ServiceRequestInput(
+        request_id=request_id,
+        text="输入字段校验失败",
+    )
+    normalized_fields = [
+        field.strip()[:100] for field in missing_fields if field.strip()
+    ]
+    if not normalized_fields:
+        normalized_fields = ["request_body"]
+
+    errors = [
+        f"input_validation_failed: {error}"[:500]
+        for error in validation_errors[:20]
+    ]
+    if not errors:
+        errors = ["input_validation_failed: unknown request validation error"]
+
+    return _build_conservative_review_result(
+        service_request=placeholder_request,
+        retrieved_references=[],
+        model_call_success=None,
+        model_output_parse_success=None,
+        raw_model_output=None,
+        errors=errors,
+        additional_reasons=[ReviewReason.MISSING_FIELDS],
+        review_note="请求字段缺失或格式无效，已转人工复核。",
+        missing_fields=normalized_fields,
+    )
+
+
 def build_provider_error_result(
     service_request: ServiceRequestInput,
     retrieved_references: list[KnowledgeReference],
@@ -147,6 +186,7 @@ def _build_conservative_review_result(
     errors: list[str],
     additional_reasons: list[ReviewReason],
     review_note: str,
+    missing_fields: list[str] | None = None,
 ) -> ServiceCaseResult:
     """创建保守的统一兜底结果，集中维护所有人工复核原因。"""
 
@@ -167,7 +207,9 @@ def _build_conservative_review_result(
         request_id=service_request.request_id,
         scenario=service_request.scenario,
         entities=ExtractedEntities(
-            missing_fields=["location", "event_time_description"]
+            missing_fields=missing_fields
+            if missing_fields is not None
+            else ["location", "event_time_description"]
         ),
         classification=EventClassification(
             event_type=EventType.OTHER_UNKNOWN,
