@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.rag.knowledge_store import ChromaKnowledgeStore
+from app.schemas.models import KnowledgeSearchResult
 
 
 def test_demo_facility_document_is_indexed_and_cited(tmp_path: Path) -> None:
@@ -27,6 +28,14 @@ def test_demo_facility_document_is_indexed_and_cited(tmp_path: Path) -> None:
     assert references[0].is_demo_source is True
     assert 0.0 <= references[0].relevance_score <= 1.0
 
+    # 演示终端输出也使用 Pydantic 模型，避免拼接未校验的 JSON 字典。
+    search_result = KnowledgeSearchResult(
+        query="卫生间没水",
+        knowledge_hit=True,
+        knowledge_references=references,
+    )
+    assert '"knowledge_hit":true' in search_result.model_dump_json()
+
 
 def test_unrelated_request_returns_no_knowledge_reference(tmp_path: Path) -> None:
     """无关诉求不能被“最相近”的演示资料误判为知识命中。"""
@@ -36,4 +45,12 @@ def test_unrelated_request_returns_no_knowledge_reference(tmp_path: Path) -> Non
     store = ChromaKnowledgeStore(persist_directory=tmp_path / "chroma")
     store.index_directory(knowledge_directory)
 
-    assert store.search("航班改签咨询", limit=1) == []
+    references = store.search("航班改签咨询", limit=1)
+    search_result = KnowledgeSearchResult(
+        query="航班改签咨询",
+        knowledge_hit=False,
+        knowledge_references=references,
+    )
+
+    assert references == []
+    assert search_result.knowledge_hit is False

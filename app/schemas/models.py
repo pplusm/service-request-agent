@@ -126,6 +126,24 @@ class KnowledgeReference(StrictSchema):
     is_demo_source: Literal[True] = True
 
 
+class KnowledgeSearchResult(StrictSchema):
+    """RAG 子系统的检索结果，不代表完整的案件处置结论。"""
+
+    query: str = Field(min_length=1, max_length=2000)
+    knowledge_hit: bool
+    knowledge_references: list[KnowledgeReference] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_knowledge_hit(self) -> "KnowledgeSearchResult":
+        """确保“是否命中”的标记与实际引用列表一致。"""
+
+        if self.knowledge_hit != bool(self.knowledge_references):
+            raise ValueError(
+                "knowledge_hit must match whether knowledge_references is empty"
+            )
+        return self
+
+
 class ActionPlanItem(StrictSchema):
     """基于演示知识生成的建议动作，不代表真实景区处置指令。"""
 
