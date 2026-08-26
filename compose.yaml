@@ -1,0 +1,59 @@
+services:
+  api:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+    environment:
+      # 未设置时始终使用免费、本地的演示模型。
+      LLM_PROVIDER: "${LLM_PROVIDER:-demo}"
+      # 将运行产生的 SQLite 数据放入独立卷，避免覆盖随镜像提供的演示知识资料。
+      CASE_HISTORY_DATABASE: "/app/runtime_data/case_history.sqlite3"
+      # 以下变量仅为将来替换提供方预留；不要把真实密钥写进本文件。
+      OPENAI_COMPATIBLE_BASE_URL: "${OPENAI_COMPATIBLE_BASE_URL:-}"
+      OPENAI_COMPATIBLE_API_KEY: "${OPENAI_COMPATIBLE_API_KEY:-}"
+      OPENAI_COMPATIBLE_MODEL: "${OPENAI_COMPATIBLE_MODEL:-}"
+      OPENAI_COMPATIBLE_TIMEOUT_SECONDS: "${OPENAI_COMPATIBLE_TIMEOUT_SECONDS:-30}"
+      OPENAI_COMPATIBLE_STRUCTURED_OUTPUT_MODE: "${OPENAI_COMPATIBLE_STRUCTURED_OUTPUT_MODE:-json_object}"
+    volumes:
+      - chroma_data:/app/chroma_data
+      - case_history_data:/app/runtime_data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  ui:
+    build:
+      context: .
+    ports:
+      - "8501:8501"
+    environment:
+      TRIAGE_API_BASE_URL: "http://api:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      [
+        "python",
+        "-m",
+        "streamlit",
+        "run",
+        "app/ui/streamlit_app.py",
+        "--server.address",
+        "0.0.0.0",
+        "--server.port",
+        "8501",
+      ]
+
+volumes:
+  chroma_data:
+  case_history_data:

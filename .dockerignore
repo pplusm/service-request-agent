@@ -1,0 +1,20 @@
+# Git 和本机环境文件不应进入镜像构建上下文。
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+
+# 可在容器启动时重新生成或挂载的数据。
+chroma_data
+data/*.sqlite3
+data/case_history
+
+# 镜像运行不需要的开发材料。
+tests
+docs

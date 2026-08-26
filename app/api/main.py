@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Request
@@ -32,7 +33,13 @@ from app.schemas.models import ServiceCaseResult
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KNOWLEDGE_DIRECTORY = PROJECT_ROOT / "data" / "scenic_service" / "knowledge"
 DEFAULT_CHROMA_DIRECTORY = PROJECT_ROOT / "chroma_data"
-DEFAULT_CASE_HISTORY_DATABASE = PROJECT_ROOT / "data" / "case_history.sqlite3"
+# 容器运行时可用环境变量把本地案件历史放到独立数据卷；本地开发仍使用原来的默认位置。
+DEFAULT_CASE_HISTORY_DATABASE = Path(
+    os.getenv(
+        "CASE_HISTORY_DATABASE",
+        str(PROJECT_ROOT / "data" / "case_history.sqlite3"),
+    )
+)
 
 
 def create_app(

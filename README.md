@@ -10,6 +10,14 @@
 - 只使用演示数据和可追溯知识引用。
 - 默认使用免费的本地确定性演示模型，不调用外部 API。
 
+## 项目文档
+
+- [系统架构说明](docs/architecture.md)：组件职责、数据流和安全边界。
+- [演示与录屏脚本](docs/demo-script.md)：答辩时可按此顺序演示本项目。
+
+所有规则、知识资料和处理建议均为演示数据。它们不代表真实景区服务规则、真实处置角色、
+服务时限或模型准确率。
+
 ## 暂不实现
 
 - 图片输入。
@@ -24,16 +32,30 @@
 python scenarios\scenic_service\run_demo_agent.py "西门照明故障"
 ```
 
-## 本地 API
+## 本地启动
 
-安装项目依赖后启动 FastAPI：
+请打开两个 PowerShell 窗口，并都切换到项目目录、激活同一个 Conda 环境。第一窗口启动 API：
 
 ```powershell
+conda activate service-request-agent
+Set-Location E:\project\agent\service-request-agent
 python -m uvicorn app.api.main:app --reload
 ```
 
 然后在浏览器打开 `http://127.0.0.1:8000/docs`，使用
 `POST /api/v1/triage` 接口测试文本诉求。
+
+第二窗口启动 Streamlit 操作页面：
+
+```powershell
+conda activate service-request-agent
+Set-Location E:\project\agent\service-request-agent
+python -m streamlit run app\ui\streamlit_app.py
+```
+
+浏览器打开 `http://127.0.0.1:8501`。在页面中输入案件编号和景区服务诉求，页面会调用
+本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。默认的模拟模型完全在本机运行，
+不需要 API Key。
 
 ## 可选：接入 OpenAI-compatible 模型
 
@@ -58,15 +80,7 @@ python -m uvicorn app.api.main:app --reload
 
 ## 本地操作页面
 
-先保持上方 FastAPI 服务正在运行。然后在项目根目录打开第二个、已激活
-`service-request-agent` 环境的 PowerShell 窗口，运行：
-
-```powershell
-python -m streamlit run app\ui\streamlit_app.py
-```
-
-浏览器打开 `http://localhost:8501`。在页面中输入案件编号和景区服务诉求，
-页面会调用本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。
+启动命令见上方“本地启动”。页面包含“提交分诊”“案件历史”和“待人工复核”三个标签页。
 
 ## 本地案件历史与人工复核
 
@@ -126,3 +140,41 @@ python -m pytest tests\rules\test_scenic_service_config.py
 ```powershell
 python -m pytest tests\evaluation\test_runner.py
 ```
+
+## 演示截图
+
+以下截图只展示本项目的本地演示数据，不含 API Key、真实个人信息或真实业务记录：
+
+提交页面：
+
+![Streamlit 提交页面](docs/screenshots/streamlit-submit.jpg)
+
+低风险、知识库命中的演示结果：
+
+![Streamlit 分诊结果](docs/screenshots/streamlit-result.jpg)
+
+高风险演示案例进入人工复核队列：
+
+![Streamlit 人工复核队列](docs/screenshots/streamlit-review-queue.jpg)
+
+## Docker 启动（可选）
+
+Docker 配置会启动 FastAPI 和 Streamlit 两个容器，并默认使用免费的 `demo` 模型，
+因此不需要 API Key。首次使用前需要安装并启动 Docker Desktop；本电脑当前尚未检测到
+Docker 命令，所以尚未在本机实际启动容器。
+
+安装 Docker Desktop 后，请先停止占用 `8000`、`8501` 端口的本地服务，再在项目根目录运行：
+
+```powershell
+docker compose up --build
+```
+
+然后打开 `http://127.0.0.1:8501`。结束容器并保留本地数据卷：
+
+```powershell
+docker compose down
+```
+
+`compose.yaml` 会保存 ChromaDB 和案件历史的容器数据卷。以后若要切换 OpenAI-compatible
+模型，只能在本机终端临时设置环境变量后再启动 Compose；不要把真实密钥写入
+`compose.yaml`、README、截图或 Git 仓库。
