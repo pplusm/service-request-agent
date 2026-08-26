@@ -14,7 +14,19 @@ from app.llm.provider import (
     ModelProviderError,
     StructuredGenerationRequest,
 )
-from app.schemas.models import KnowledgeReference, ServiceRequestInput
+from app.rules.scenic_service_config import (
+    DemonstrationRoute,
+    EventMatcher,
+    RiskRule,
+    ScenicServiceConfiguration,
+    load_scenic_service_configuration,
+)
+from app.schemas.models import (
+    KnowledgeReference,
+    ReviewReason,
+    RiskLevel,
+    ServiceRequestInput,
+)
 
 
 # 以下词语只用于项目教学中的确定性文本匹配，不是实际语言模型能力。
@@ -23,26 +35,20 @@ _DEMO_LOCATION_PATTERN: Final = re.compile(
     r"停车场(?:附近)?|入口(?:附近)?|出口(?:附近)?|服务台(?:附近)?|"
     r"观景台(?:附近)?|广场(?:附近)?)"
 )
-_HIGH_RISK_KEYWORDS: Final = (
-    "受伤",
-    "昏倒",
-    "晕倒",
-    "摔倒",
-    "流血",
-    "火灾",
-    "起火",
-    "烟雾",
-    "危险",
-    "急救",
-)
-
-
 class DemoLLMProvider(LLMProvider):
     """不联网的确定性演示提供方，仅用于本项目的本地展示和测试。"""
 
-    def __init__(self, *, simulate_invalid_output: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        configuration: ScenicServiceConfiguration | None = None,
+        simulate_invalid_output: bool = False,
+    ) -> None:
         # 该开关专门用于演示模型输出不符合 JSON Schema 时的安全兜底路径。
         self._simulate_invalid_output = simulate_invalid_output
+
+        # 默认从 YAML 加载配置；测试也可以注入临时配置验证不再依赖硬编码规则。
+        self._configuration = configuration or load_scenic_service_configuration()
 
         # 保留调用快照，便于测试确认 Agent 向提供方传递了结构化请求。
         self.requests: list[StructuredGenerationRequest] = []
@@ -61,6 +67,7 @@ class DemoLLMProvider(LLMProvider):
             _build_demo_response(
                 service_request=service_request,
                 references=references,
+                configuration=self._configuration,
             )
         )
 
@@ -114,61 +121,41 @@ def _build_demo_response(
     *,
     service_request: ServiceRequestInput,
     references: list[KnowledgeReference],
+    configuration: ScenicServiceConfiguration,
 ) -> str:
     """按可控演示规则生成结果；每份引用都来自本次实际检索。"""
 
-    issue = _identify_demo_issue(service_request.text)
-    if issue is None or not references:
+    event_matcher = configuration.find_event_matcher(service_request.text)
+    if event_matcher is None or not references:
         # 相近资料不足以支持请求时，不能保留它作为本案依据。
         return _build_unsupported_issue_response(service_request)
 
-    facility_name, evidence = issue
     location = _extract_demo_location(service_request.text)
-    if _contains_high_risk_signal(service_request.text):
+    high_risk_rule = configuration.find_high_risk_rule(service_request.text)
+    if high_risk_rule is not None:
         return _build_high_risk_response(
             service_request=service_request,
             reference=references[0],
             location=location,
-            facility_name=facility_name,
-            evidence=evidence,
+            event_matcher=event_matcher,
+            risk_rule=high_risk_rule,
         )
+
+    route = configuration.find_route(
+        event_type=event_matcher.event_type,
+        risk_level=RiskLevel.LOW,
+    )
+    if route is None:
+        # 配置没有为当前低风险事件提供建议时，宁可转人工，也不能猜测动作。
+        return _build_unsupported_issue_response(service_request)
 
     return _build_facility_fault_response(
         service_request=service_request,
         reference=references[0],
         location=location,
-        facility_name=facility_name,
-        evidence=evidence,
+        event_matcher=event_matcher,
+        route=route,
     )
-
-
-def _identify_demo_issue(text: str) -> tuple[str, str] | None:
-    """识别演示资料列出的设施问题，并保留用户输入作为证据。"""
-
-    normalized_text = text.strip()
-    if ("卫生间" in normalized_text or "洗手间" in normalized_text or "厕所" in normalized_text) and (
-        "没水" in normalized_text
-        or "无水" in normalized_text
-        or "停水" in normalized_text
-    ):
-        return "卫生间", normalized_text
-
-    if "指示牌" in normalized_text and (
-        "损坏" in normalized_text
-        or "破损" in normalized_text
-        or "坏了" in normalized_text
-    ):
-        return "指示牌", normalized_text
-
-    if ("照明" in normalized_text or "路灯" in normalized_text) and (
-        "故障" in normalized_text
-        or "损坏" in normalized_text
-        or "不亮" in normalized_text
-        or "坏了" in normalized_text
-    ):
-        return "照明设施", normalized_text
-
-    return None
 
 
 def _extract_demo_location(text: str) -> str | None:
@@ -180,50 +167,69 @@ def _extract_demo_location(text: str) -> str | None:
     return match.group("location")
 
 
-def _contains_high_risk_signal(text: str) -> bool:
-    """识别演示高风险提示词；该判断不构成真实安全评估。"""
-
-    return any(keyword in text for keyword in _HIGH_RISK_KEYWORDS)
-
-
 def _build_facility_fault_response(
     *,
     service_request: ServiceRequestInput,
     reference: KnowledgeReference,
     location: str | None,
-    facility_name: str,
-    evidence: str,
+    event_matcher: EventMatcher,
+    route: DemonstrationRoute,
 ) -> str:
     """构造普通设施问题的结果；地点缺失时禁止自动给出建议。"""
 
-    missing_fields = [] if location is not None else ["location"]
-    requires_human_review = bool(missing_fields)
+    entity_values = {
+        "location": location,
+        "facility_name": event_matcher.facility_name,
+        "visitor_condition": None,
+        "estimated_affected_count": None,
+        "event_time_description": None,
+    }
+    missing_fields = [
+        field_name
+        for field_name in route.required_fields
+        if entity_values[field_name] is None
+    ]
+    source_matches_route = reference.source_id == route.knowledge_source_id
+    requires_human_review = bool(missing_fields) or not source_matches_route
     action_plan: list[dict[str, object]] = []
     if not requires_human_review:
         action_plan.append(
             {
                 "step": 1,
-                "suggested_action": "创建演示性设施维护跟进建议。",
-                "knowledge_source_ids": [reference.source_id],
-                "is_demo_action": True,
+                "suggested_action": route.suggested_action,
+                "knowledge_source_ids": [route.knowledge_source_id],
+                "is_demo_action": route.is_demo_action,
             }
         )
+
+    review_reasons: list[str] = []
+    if missing_fields:
+        review_reasons.append(ReviewReason.MISSING_FIELDS.value)
+    if not source_matches_route:
+        review_reasons.append(ReviewReason.RULE_CONFLICT.value)
+
+    if missing_fields:
+        review_note = "配置要求的字段缺失，需人工补充确认。"
+    elif not source_matches_route:
+        review_note = "演示建议配置与本次知识来源不一致，已转人工复核。"
+    else:
+        review_note = ""
 
     return _serialize_result_payload(
         service_request=service_request,
         entities={
             "location": location,
-            "facility_name": facility_name,
+            "facility_name": event_matcher.facility_name,
             "visitor_condition": None,
             "estimated_affected_count": None,
             "event_time_description": None,
             "missing_fields": missing_fields,
         },
         classification={
-            "event_type": "facility_fault",
+            "event_type": event_matcher.event_type.value,
             # 这是固定演示分数，不是系统准确率或真实模型指标。
             "confidence": 0.9,
-            "evidence": [evidence],
+            "evidence": [service_request.text],
         },
         risk={
             "level": "low",
@@ -234,10 +240,8 @@ def _build_facility_fault_response(
         action_plan=action_plan,
         review={
             "requires_human_review": requires_human_review,
-            "reasons": ["missing_fields"] if requires_human_review else [],
-            "review_note": "地点信息缺失，需人工补充确认。"
-            if requires_human_review
-            else "",
+            "reasons": review_reasons,
+            "review_note": review_note,
         },
         diagnostics={
             "knowledge_hit": True,
@@ -254,13 +258,13 @@ def _build_high_risk_response(
     service_request: ServiceRequestInput,
     reference: KnowledgeReference,
     location: str | None,
-    facility_name: str,
-    evidence: str,
+    event_matcher: EventMatcher,
+    risk_rule: RiskRule,
 ) -> str:
     """高风险提示出现时保留人工复核，且不输出自动处置建议。"""
 
     missing_fields = [] if location is not None else ["location"]
-    review_reasons = ["high_risk"]
+    review_reasons = [risk_rule.review_reason.value]
     if missing_fields:
         review_reasons.append("missing_fields")
 
@@ -268,28 +272,28 @@ def _build_high_risk_response(
         service_request=service_request,
         entities={
             "location": location,
-            "facility_name": facility_name,
+            "facility_name": event_matcher.facility_name,
             "visitor_condition": None,
             "estimated_affected_count": None,
             "event_time_description": None,
             "missing_fields": missing_fields,
         },
         classification={
-            "event_type": "facility_fault",
+            "event_type": event_matcher.event_type.value,
             "confidence": 0.9,
-            "evidence": [evidence],
+            "evidence": [service_request.text],
         },
         risk={
-            "level": "high",
-            "risk_factors": ["文本含有可能的安全或健康风险描述。"],
-            "summary": "演示性高风险提示，必须由人工确认。",
+            "level": risk_rule.risk_level.value,
+            "risk_factors": [f"命中演示风险规则：{risk_rule.rule_id}"],
+            "summary": risk_rule.risk_summary,
         },
         knowledge_references=[reference.model_dump(mode="json")],
         action_plan=[],
         review={
             "requires_human_review": True,
             "reasons": review_reasons,
-            "review_note": "检测到可能的高风险描述，已转人工复核。",
+            "review_note": risk_rule.review_note,
         },
         diagnostics={
             "knowledge_hit": True,

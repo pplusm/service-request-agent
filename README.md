@@ -46,3 +46,28 @@ python -m streamlit run app\ui\streamlit_app.py
 
 浏览器打开 `http://localhost:8501`。在页面中输入案件编号和景区服务诉求，
 页面会调用本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。
+
+## 演示场景配置
+
+景区服务的演示规则不再直接写在 Python 判断语句中，统一放在以下文件：
+
+- `scenarios/scenic_service/scenario.yaml`：当前可识别的演示事件和关键词组合。
+- `scenarios/scenic_service/risk_rules.yaml`：命中后必须升级人工复核的演示高风险词。
+- `scenarios/scenic_service/routing.yaml`：低风险设施故障可展示的演示建议及其知识来源。
+
+这些内容全部是项目演示配置，不代表真实景区角色、调度路径或服务时限。配置文件会在
+FastAPI 启动时经 Pydantic 校验；修改 YAML 后，请重启 FastAPI 服务再测试。
+
+## 测试
+
+运行全部测试：
+
+```powershell
+python -m pytest
+```
+
+只验证场景配置及其与模拟模型的连接：
+
+```powershell
+python -m pytest tests\rules\test_scenic_service_config.py
+```

@@ -1,0 +1,26 @@
+# 本文件只用于项目演示的保守升级判断，不能作为真实安全处置规则。
+scenario_id: scenic_service
+
+rules:
+  - rule_id: demo_possible_immediate_safety_or_health_risk
+    # 命中任一词即转为高风险并强制人工复核；词表不是完整风险字典。
+    keywords:
+      - 受伤
+      - 昏倒
+      - 晕倒
+      - 摔倒
+      - 流血
+      - 火灾
+      - 起火
+      - 烟雾
+      - 危险
+      - 急救
+      - 踩踏
+      - 走失
+      - 溺水
+      - 暴力
+    risk_level: high
+    requires_human_review: true
+    review_reason: high_risk
+    risk_summary: 命中演示高风险线索，必须由人工确认。
+    review_note: 命中演示风险规则，已转人工复核。

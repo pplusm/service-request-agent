@@ -1,0 +1,22 @@
+# 本文件只描述项目演示中可识别的景区文本诉求，不是实际景区分类规范。
+scenario_id: scenic_service
+input_channel: text
+display_name: 景区服务文本演示
+
+# 所有关键词组都需要命中；每个组中的任一关键词命中即可。
+event_matchers:
+  - event_type: facility_fault
+    facility_name: 卫生间
+    keyword_groups:
+      - [卫生间, 洗手间, 厕所]
+      - [没水, 无水, 停水]
+  - event_type: facility_fault
+    facility_name: 指示牌
+    keyword_groups:
+      - [指示牌]
+      - [损坏, 破损, 坏了]
+  - event_type: facility_fault
+    facility_name: 照明设施
+    keyword_groups:
+      - [照明, 路灯]
+      - [故障, 损坏, 不亮, 坏了]

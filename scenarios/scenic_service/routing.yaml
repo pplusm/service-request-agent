@@ -1,0 +1,11 @@
+# 本文件仅提供低风险设施故障的演示建议，不含真实岗位、调度路径或服务时限。
+scenario_id: scenic_service
+
+routes:
+  - route_id: demo_facility_maintenance_follow_up
+    event_type: facility_fault
+    risk_level: low
+    required_fields: [location]
+    suggested_action: 创建演示性设施维护跟进建议。
+    knowledge_source_id: demo_facility_001
+    is_demo_action: true

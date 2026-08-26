@@ -19,6 +19,11 @@ from app.llm.provider import (
     StructuredGenerationRequest,
 )
 from app.rag.knowledge_store import ChromaKnowledgeStore
+from app.rules.risk_enforcement import enforce_configured_high_risk_rule
+from app.rules.scenic_service_config import (
+    ScenicServiceConfiguration,
+    load_scenic_service_configuration,
+)
 from app.schemas.models import (
     KnowledgeReference,
     ServiceCaseResult,
@@ -44,10 +49,14 @@ class TriageAgent:
         self,
         knowledge_store: ChromaKnowledgeStore,
         model_provider: LLMProvider,
+        configuration: ScenicServiceConfiguration | None = None,
     ) -> None:
+        # 风险配置由 Agent 持有，确保未来替换真实模型后仍保留规则兜底。
+        self._configuration = configuration or load_scenic_service_configuration()
         self._graph = build_triage_graph(
             knowledge_store=knowledge_store,
             model_provider=model_provider,
+            configuration=self._configuration,
         )
 
     def run(self, service_request: ServiceRequestInput) -> ServiceCaseResult:
@@ -56,18 +65,26 @@ class TriageAgent:
         try:
             state = self._graph.invoke({"service_request": service_request})
         except Exception as error:
-            return build_knowledge_miss_result(
+            return enforce_configured_high_risk_rule(
+                result=build_knowledge_miss_result(
+                    service_request=service_request,
+                    retrieval_error=f"agent_graph_failed: {error}",
+                ),
                 service_request=service_request,
-                retrieval_error=f"agent_graph_failed: {error}",
+                configuration=self._configuration,
             )
 
         result = state.get("result")
         if isinstance(result, ServiceCaseResult):
             return result
 
-        return build_knowledge_miss_result(
+        return enforce_configured_high_risk_rule(
+            result=build_knowledge_miss_result(
+                service_request=service_request,
+                retrieval_error="agent_graph_finished_without_a_valid_result",
+            ),
             service_request=service_request,
-            retrieval_error="agent_graph_finished_without_a_valid_result",
+            configuration=self._configuration,
         )
 
 
@@ -75,6 +92,7 @@ def build_triage_graph(
     *,
     knowledge_store: ChromaKnowledgeStore,
     model_provider: LLMProvider,
+    configuration: ScenicServiceConfiguration,
 ):
     """构建检索、模型生成和安全解析三个节点组成的 LangGraph。"""
 
@@ -125,15 +143,26 @@ def build_triage_graph(
                 raw_model_output=state.get("raw_model_output", ""),
                 retrieved_references=references,
             )
-        return {"result": result}
+        return {
+            "result": enforce_configured_high_risk_rule(
+                result=result,
+                service_request=service_request,
+                configuration=configuration,
+            )
+        }
 
     def build_knowledge_review(state: TriageGraphState) -> dict[str, ServiceCaseResult]:
         """知识未命中时不调用模型，直接生成必须人工复核的安全结果。"""
 
+        service_request = state["service_request"]
         return {
-            "result": build_knowledge_miss_result(
-                service_request=state["service_request"],
-                retrieval_error=state.get("retrieval_error"),
+            "result": enforce_configured_high_risk_rule(
+                result=build_knowledge_miss_result(
+                    service_request=service_request,
+                    retrieval_error=state.get("retrieval_error"),
+                ),
+                service_request=service_request,
+                configuration=configuration,
             )
         }
 

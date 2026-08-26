@@ -9,6 +9,7 @@ from app.rag.knowledge_store import ChromaKnowledgeStore
 from app.schemas.models import (
     KnowledgeReference,
     ReviewReason,
+    RiskLevel,
     ServiceRequestInput,
 )
 
@@ -23,11 +24,15 @@ def build_store(tmp_path: Path) -> ChromaKnowledgeStore:
     return store
 
 
-def build_valid_model_output(reference: KnowledgeReference) -> str:
+def build_valid_model_output(
+    reference: KnowledgeReference,
+    *,
+    request_id: str = "graph_demo_001",
+) -> str:
     """构造一份带真实检索引用的模拟模型 JSON。"""
 
     payload = {
-        "request_id": "graph_demo_001",
+        "request_id": request_id,
         "scenario": "scenic_service",
         "entities": {
             "location": "东门附近",
@@ -154,3 +159,56 @@ def test_triage_agent_turns_provider_error_into_human_review(tmp_path: Path) -> 
     assert ReviewReason.LLM_ERROR in result.review.reasons
     assert result.diagnostics.model_call_success is False
     assert result.diagnostics.model_output_parse_success is None
+
+
+def test_triage_agent_forces_high_risk_from_yaml_even_without_knowledge(
+    tmp_path: Path,
+) -> None:
+    """风险词命中时，即使资料未命中且模型未调用，也必须强制升级。"""
+
+    store = build_store(tmp_path)
+    provider = MockLLMProvider()
+    agent = TriageAgent(knowledge_store=store, model_provider=provider)
+
+    result = agent.run(
+        ServiceRequestInput(
+            request_id="graph_demo_005",
+            text="东门有人受伤，需要帮助。",
+        )
+    )
+
+    assert result.risk.level == RiskLevel.HIGH
+    assert result.review.requires_human_review is True
+    assert ReviewReason.HIGH_RISK in result.review.reasons
+    assert ReviewReason.KNOWLEDGE_NOT_FOUND in result.review.reasons
+    assert provider.requests == []
+
+
+def test_triage_agent_removes_model_action_when_yaml_rule_marks_high_risk(
+    tmp_path: Path,
+) -> None:
+    """模型即使返回低风险建议，也不能覆盖 YAML 的高风险人工复核规则。"""
+
+    store = build_store(tmp_path)
+    # 模拟模型引用必须与 Agent 本次查询得到的引用完全相同，避免触发引用校验失败。
+    reference = store.search("东门卫生间没水，有游客摔倒。", limit=1)[0]
+    provider = MockLLMProvider(
+        build_valid_model_output(reference, request_id="graph_demo_006")
+    )
+    agent = TriageAgent(knowledge_store=store, model_provider=provider)
+
+    result = agent.run(
+        ServiceRequestInput(
+            request_id="graph_demo_006",
+            text="东门卫生间没水，有游客摔倒。",
+        )
+    )
+
+    assert result.risk.level == RiskLevel.HIGH
+    assert ReviewReason.HIGH_RISK in result.review.reasons
+    assert result.action_plan == []
+    assert result.diagnostics.model_output_parse_success is True
+    assert result.risk.risk_factors == [
+        "命中演示风险规则：demo_possible_immediate_safety_or_health_risk"
+    ]
+    assert result.review.review_note == "命中演示风险规则，已转人工复核。"
