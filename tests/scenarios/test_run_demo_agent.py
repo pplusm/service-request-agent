@@ -82,3 +82,15 @@ def test_demo_mock_only_simulates_invalid_output_when_requested(
     assert result.review.requires_human_review is True
     assert ReviewReason.INVALID_MODEL_OUTPUT in result.review.reasons
     assert result.diagnostics.model_output_parse_success is False
+
+
+def test_non_facility_knowledge_cannot_enable_an_automatic_action(
+    tmp_path: Path,
+) -> None:
+    """新增的医疗主题资料不能绕过第一阶段只支持设施故障的边界。"""
+
+    result = run_demo(build_store(tmp_path), "游客身体不适，想要医疗咨询。")
+
+    assert result.review.requires_human_review is True
+    assert ReviewReason.KNOWLEDGE_NOT_FOUND in result.review.reasons
+    assert result.action_plan == []

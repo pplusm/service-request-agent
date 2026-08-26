@@ -8,6 +8,7 @@
 - Scenario: `scenic_service`
 - Intended event type: `facility_fault`
 - Citation path: `data/scenic_service/knowledge/demo_facility.md`
+- Retrieval keywords: `卫生间没水`, `洗手间无水`, `指示牌损坏`, `照明故障`, `路灯不亮`
 
 ## Demonstration scope
 

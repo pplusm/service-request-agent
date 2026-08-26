@@ -23,6 +23,9 @@ _SOURCE_TITLE_PATTERN: Final = re.compile(r"^# (?P<value>.+)$", re.MULTILINE)
 _SOURCE_PATH_PATTERN: Final = re.compile(
     r"^- Citation path: `(?P<value>[^`]+)`$", re.MULTILINE
 )
+_RETRIEVAL_KEYWORDS_PATTERN: Final = re.compile(
+    r"^- Retrieval keywords: (?P<value>.+)$", re.MULTILINE
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class _KnowledgeDocument:
     source_id: str
     source_title: str
     source_path: str
+    retrieval_keywords: list[str]
     content: str
 
 
@@ -189,8 +193,8 @@ class ChromaKnowledgeStore:
         for document, metadata, distance in zip(documents, metadatas, distances):
             if document is None or metadata is None:
                 continue
-            # 向量库总会给出最相近的结果。演示阶段必须额外要求关键词重叠，
-            # 否则无关诉求也会被错误地当作知识命中。
+            # 向量库总会给出最相近的结果。演示阶段只接受资料明确声明的完整关键词，
+            # 避免“咨询”等常见词让无关诉求被误判为知识命中。
             if not self._has_demo_keyword_overlap(normalized_query, document):
                 continue
             references.append(
@@ -224,6 +228,9 @@ class ChromaKnowledgeStore:
             source_path=ChromaKnowledgeStore._required_metadata(
                 _SOURCE_PATH_PATTERN, content, "Citation path"
             ),
+            retrieval_keywords=ChromaKnowledgeStore._read_retrieval_keywords(
+                content
+            ),
             content=content,
         )
 
@@ -237,6 +244,23 @@ class ChromaKnowledgeStore:
         return match.group("value").strip()
 
     @staticmethod
+    def _read_retrieval_keywords(content: str) -> list[str]:
+        """读取资料显式声明的演示检索词，拒绝空列表或空词。"""
+
+        raw_keywords = ChromaKnowledgeStore._required_metadata(
+            _RETRIEVAL_KEYWORDS_PATTERN,
+            content,
+            "Retrieval keywords",
+        )
+        keywords = [
+            keyword.strip().strip("`").strip()
+            for keyword in raw_keywords.split(",")
+        ]
+        if not keywords or any(not keyword for keyword in keywords):
+            raise ValueError("Retrieval keywords must contain non-empty values")
+        return keywords
+
+    @staticmethod
     def _make_excerpt(document: str) -> str:
         normalized = " ".join(document.split())
         if len(normalized) <= 1_000:
@@ -245,11 +269,12 @@ class ChromaKnowledgeStore:
 
     @staticmethod
     def _has_demo_keyword_overlap(query: str, document: str) -> bool:
-        """判断查询与资料是否共享演示级关键词，作为知识未命中的保守门槛。"""
+        """判断查询是否包含资料显式声明的完整演示检索词。"""
 
-        query_tokens = set(DemoHashEmbeddingFunction._tokenize(query))
-        document_tokens = set(DemoHashEmbeddingFunction._tokenize(document))
-        return bool(query_tokens & document_tokens)
+        return any(
+            keyword in query
+            for keyword in ChromaKnowledgeStore._read_retrieval_keywords(document)
+        )
 
     @staticmethod
     def _distance_to_demo_score(distance: float) -> float:
