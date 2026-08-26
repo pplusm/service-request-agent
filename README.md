@@ -47,6 +47,19 @@ python -m streamlit run app\ui\streamlit_app.py
 浏览器打开 `http://localhost:8501`。在页面中输入案件编号和景区服务诉求，
 页面会调用本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。
 
+## 本地案件历史与人工复核
+
+每次调用分诊接口产生的 Pydantic 案件结果都会保存在本机的
+`data/case_history.sqlite3`。数据库文件已经被 Git 忽略，不会提交到 GitHub；
+它只用于项目演示，不应写入真实个人数据。
+
+- `GET /api/v1/case-history`：查看最近 100 条本地案件结果。
+- `GET /api/v1/review-queue`：查看最近 100 条必须人工复核的案件。
+
+Streamlit 页面也提供“案件历史”和“待人工复核”两个标签页。历史记录只保存已经
+校验的结果 JSON，不单独保存原始请求体；结果中原本用于审计的证据或诊断字段会保留。
+待人工复核列表由结果中的 `requires_human_review=true` 自动生成，绝不自动标记为已复核。
+
 ## 演示场景配置
 
 景区服务的演示规则不再直接写在 Python 判断语句中，统一放在以下文件：

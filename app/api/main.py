@@ -12,6 +12,14 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_422_UNPROCESSABLE_CONTENT
 
 from app.agent.triage_graph import TriageAgent
+from app.case_history.models import (
+    CaseHistoryResponse,
+    HumanReviewQueueResponse,
+)
+from app.case_history.repository import (
+    CaseHistoryStorageError,
+    LocalCaseHistoryRepository,
+)
 from app.api.schemas import TriageApiRequest
 from app.api.service import TriageApiService, build_request_validation_error_result
 from app.llm.demo_provider import DemoLLMProvider
@@ -24,12 +32,14 @@ from app.schemas.models import ServiceCaseResult
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KNOWLEDGE_DIRECTORY = PROJECT_ROOT / "data" / "scenic_service" / "knowledge"
 DEFAULT_CHROMA_DIRECTORY = PROJECT_ROOT / "chroma_data"
+DEFAULT_CASE_HISTORY_DATABASE = PROJECT_ROOT / "data" / "case_history.sqlite3"
 
 
 def create_app(
     *,
     knowledge_directory: Path = DEFAULT_KNOWLEDGE_DIRECTORY,
     chroma_directory: Path = DEFAULT_CHROMA_DIRECTORY,
+    case_history_database: Path = DEFAULT_CASE_HISTORY_DATABASE,
     provider_factory: Callable[[], LLMProvider] = DemoLLMProvider,
 ) -> FastAPI:
     """创建可测试的 FastAPI 应用；测试可注入独立的临时知识库目录。"""
@@ -46,6 +56,10 @@ def create_app(
                 knowledge_store=knowledge_store,
                 model_provider=provider_factory(),
             )
+        )
+        # 历史库只保存通过 Pydantic 校验的结果 JSON，不单独保存原始请求体。
+        app.state.case_history_repository = LocalCaseHistoryRepository(
+            database_path=case_history_database,
         )
         yield
 
@@ -64,6 +78,8 @@ def create_app(
         """JSON 格式错误或字段类型错误也返回 Pydantic 校验过的复核结果。"""
 
         result = build_request_validation_error_result(error.errors())
+        # 即使请求 JSON 本身不合法，生成的保守复核结果也应留在本地队列中。
+        _request.app.state.case_history_repository.save(result)
         return JSONResponse(
             status_code=HTTP_422_UNPROCESSABLE_CONTENT,
             content=result.model_dump(mode="json"),
@@ -79,7 +95,37 @@ def create_app(
     ) -> ServiceCaseResult:
         """调用 Agent 并返回唯一的 Pydantic 案件结果结构。"""
 
-        return app.state.triage_service.triage(request)
+        result = app.state.triage_service.triage(request)
+        app.state.case_history_repository.save(result)
+        return result
+
+    @app.get(
+        "/api/v1/case-history",
+        response_model=CaseHistoryResponse,
+        summary="查看本地案件历史",
+    )
+    def case_history() -> CaseHistoryResponse:
+        """返回最近 100 条本地演示案件；读取异常也使用 Pydantic JSON 表达。"""
+
+        try:
+            records = app.state.case_history_repository.list_recent()
+        except CaseHistoryStorageError as error:
+            return CaseHistoryResponse(storage_error=str(error))
+        return CaseHistoryResponse(records=records)
+
+    @app.get(
+        "/api/v1/review-queue",
+        response_model=HumanReviewQueueResponse,
+        summary="查看待人工复核的本地案件",
+    )
+    def review_queue() -> HumanReviewQueueResponse:
+        """只返回安全规则已标记为必须人工复核的最近 100 条案件。"""
+
+        try:
+            records = app.state.case_history_repository.list_pending_human_review()
+        except CaseHistoryStorageError as error:
+            return HumanReviewQueueResponse(storage_error=str(error))
+        return HumanReviewQueueResponse(records=records)
 
     return app
 

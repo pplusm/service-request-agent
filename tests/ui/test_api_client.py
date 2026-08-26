@@ -1,15 +1,25 @@
 """验证 Streamlit 页面调用 API 时不会展示未通过 Pydantic 校验的结果。"""
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from urllib.error import URLError
+from uuid import uuid4
 
 import pytest
 
+from app.agent.result_parser import build_input_validation_result
+from app.case_history.models import (
+    CaseHistoryRecord,
+    CaseHistoryResponse,
+    HumanReviewQueueResponse,
+)
 from app.schemas.models import ServiceCaseResult
 from app.ui.api_client import (
     TriageApiConnectionError,
     TriageApiResponseError,
+    fetch_case_history,
+    fetch_human_review_queue,
     submit_triage_request,
 )
 
@@ -157,3 +167,69 @@ def test_submit_triage_request_explains_connection_failure(
             request_id="ui_demo_003",
             text="西门照明故障",
         )
+
+
+def test_history_clients_only_return_pydantic_valid_local_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面客户端应分别读取历史和待复核队列，并校验两类响应模型。"""
+
+    history_record = CaseHistoryRecord(
+        record_id=uuid4(),
+        recorded_at=datetime.now(timezone.utc),
+        requires_human_review=False,
+        result=build_valid_case_result(),
+    )
+    review_result = build_input_validation_result(
+        request_id="ui_history_review",
+        missing_fields=["text"],
+        validation_errors=["missing or empty field: text"],
+    )
+    review_record = CaseHistoryRecord(
+        record_id=uuid4(),
+        recorded_at=datetime.now(timezone.utc),
+        requires_human_review=True,
+        result=review_result,
+    )
+    response_bodies = {
+        "/api/v1/case-history": json.dumps(
+            CaseHistoryResponse(
+                records=[history_record, review_record]
+            ).model_dump(mode="json"),
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        "/api/v1/review-queue": json.dumps(
+            HumanReviewQueueResponse(records=[review_record]).model_dump(
+                mode="json"
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8"),
+    }
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request: Any, timeout: float) -> FakeHttpResponse:
+        requested_urls.append(request.full_url)
+        assert timeout == 15.0
+        for path, body in response_bodies.items():
+            if request.full_url.endswith(path):
+                return FakeHttpResponse(body)
+        raise AssertionError(f"unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr("app.ui.api_client.urlopen", fake_urlopen)
+
+    history = fetch_case_history(api_base_url="http://127.0.0.1:8000")
+    review_queue = fetch_human_review_queue(
+        api_base_url="http://127.0.0.1:8000"
+    )
+
+    assert [record.record_id for record in history.records] == [
+        history_record.record_id,
+        review_record.record_id,
+    ]
+    assert [record.record_id for record in review_queue.records] == [
+        review_record.record_id
+    ]
+    assert requested_urls == [
+        "http://127.0.0.1:8000/api/v1/case-history",
+        "http://127.0.0.1:8000/api/v1/review-queue",
+    ]

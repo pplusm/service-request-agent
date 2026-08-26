@@ -8,8 +8,18 @@ from datetime import datetime
 
 import streamlit as st
 
+from app.case_history.models import (
+    CaseHistoryRecord,
+    CaseHistoryResponse,
+    HumanReviewQueueResponse,
+)
 from app.schemas.models import ServiceCaseResult
-from app.ui.api_client import TriageApiClientError, submit_triage_request
+from app.ui.api_client import (
+    TriageApiClientError,
+    fetch_case_history,
+    fetch_human_review_queue,
+    submit_triage_request,
+)
 
 
 # 可通过环境变量修改地址，默认连接同一台电脑上的 FastAPI 服务。
@@ -68,6 +78,94 @@ def _render_case_result(result: ServiceCaseResult) -> None:
         st.json(result.model_dump(mode="json"))
 
 
+def _build_history_rows(records: list[CaseHistoryRecord]) -> list[dict[str, str]]:
+    """将严格案件模型转换为适合表格扫描的展示字段。"""
+
+    rows: list[dict[str, str]] = []
+    for record in records:
+        result = record.result
+        rows.append(
+            {
+                "记录时间": record.recorded_at.astimezone().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "案件编号": result.request_id,
+                "事件类别": result.classification.event_type.value,
+                "风险等级": result.risk.level.value,
+                "人工复核": "待复核" if record.requires_human_review else "不需要",
+                "复核原因": "、".join(
+                    reason.value for reason in result.review.reasons
+                )
+                or "-",
+            }
+        )
+    return rows
+
+
+def _render_records(
+    records: list[CaseHistoryRecord],
+    *,
+    empty_message: str,
+) -> None:
+    """显示本地记录表格，并允许展开查看已校验的完整结果 JSON。"""
+
+    if not records:
+        st.info(empty_message)
+        return
+
+    st.dataframe(
+        _build_history_rows(records),
+        hide_index=True,
+        use_container_width=True,
+    )
+    for record in records:
+        result = record.result
+        with st.expander(
+            f"{result.request_id} · {result.risk.level.value} · "
+            f"{record.recorded_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
+        ):
+            st.json(record.model_dump(mode="json"))
+
+
+def _render_case_history_tab(api_base_url: str) -> None:
+    """从本地 API 读取并展示最近保存的案件历史。"""
+
+    st.subheader("案件历史")
+    try:
+        response: CaseHistoryResponse = fetch_case_history(
+            api_base_url=api_base_url
+        )
+    except TriageApiClientError as error:
+        st.error(str(error))
+        return
+
+    if response.storage_error:
+        st.error(f"本地案件历史不可读取：{response.storage_error}")
+        return
+    _render_records(response.records, empty_message="尚未保存本地案件记录。")
+
+
+def _render_review_queue_tab(api_base_url: str) -> None:
+    """从本地 API 读取并展示所有仍需人工复核的案件。"""
+
+    st.subheader("待人工复核")
+    try:
+        response: HumanReviewQueueResponse = fetch_human_review_queue(
+            api_base_url=api_base_url
+        )
+    except TriageApiClientError as error:
+        st.error(str(error))
+        return
+
+    if response.storage_error:
+        st.error(f"待人工复核列表不可读取：{response.storage_error}")
+        return
+    _render_records(
+        response.records,
+        empty_message="当前没有待人工复核的本地案件。",
+    )
+
+
 def main() -> None:
     """创建页面表单；页面只发起请求，不重复实现 Agent 判断逻辑。"""
 
@@ -85,40 +183,47 @@ def main() -> None:
         st.subheader("连接设置")
         api_base_url = st.text_input("FastAPI 服务地址", value=DEFAULT_API_BASE_URL)
 
-    with st.form("triage_form"):
-        request_id = st.text_input(
-            "案件编号",
-            key="triage_request_id",
-            max_chars=100,
-        )
-        text = st.text_area(
-            "景区服务诉求",
-            placeholder="例如：西门照明故障",
-            max_chars=2000,
-            height=140,
-        )
-        submitted = st.form_submit_button("提交分诊")
+    triage_tab, history_tab, review_queue_tab = st.tabs(
+        ["提交分诊", "案件历史", "待人工复核"]
+    )
 
-    if not submitted:
-        return
-
-    if not request_id.strip() or not text.strip():
-        # 页面提前提示，API 仍保留对空字段转人工复核的最终保障。
-        st.error("案件编号和景区服务诉求均不能为空。")
-        return
-
-    with st.spinner("正在调用本地 Agent..."):
-        try:
-            result = submit_triage_request(
-                api_base_url=api_base_url,
-                request_id=request_id,
-                text=text,
+    with triage_tab:
+        with st.form("triage_form"):
+            request_id = st.text_input(
+                "案件编号",
+                key="triage_request_id",
+                max_chars=100,
             )
-        except TriageApiClientError as error:
-            st.error(str(error))
-            return
+            text = st.text_area(
+                "景区服务诉求",
+                placeholder="例如：西门照明故障",
+                max_chars=2000,
+                height=140,
+            )
+            submitted = st.form_submit_button("提交分诊")
 
-    _render_case_result(result)
+        if submitted:
+            if not request_id.strip() or not text.strip():
+                # 页面提前提示，API 仍保留对空字段转人工复核的最终保障。
+                st.error("案件编号和景区服务诉求均不能为空。")
+            else:
+                with st.spinner("正在调用本地 Agent..."):
+                    try:
+                        result = submit_triage_request(
+                            api_base_url=api_base_url,
+                            request_id=request_id,
+                            text=text,
+                        )
+                    except TriageApiClientError as error:
+                        st.error(str(error))
+                    else:
+                        _render_case_result(result)
+
+    with history_tab:
+        _render_case_history_tab(api_base_url)
+
+    with review_queue_tab:
+        _render_review_queue_tab(api_base_url)
 
 
 if __name__ == "__main__":

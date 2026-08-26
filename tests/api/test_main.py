@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.api.main import create_app
+from app.case_history.models import CaseHistoryResponse, HumanReviewQueueResponse
 from app.schemas.models import ReviewReason, RiskLevel, ServiceCaseResult
 
 
@@ -15,6 +16,7 @@ def build_client(tmp_path: Path) -> TestClient:
     app = create_app(
         knowledge_directory=project_root / "data" / "scenic_service" / "knowledge",
         chroma_directory=tmp_path / "chroma",
+        case_history_database=tmp_path / "case_history.sqlite3",
     )
     return TestClient(app)
 
@@ -100,6 +102,48 @@ def test_triage_api_keeps_high_risk_request_for_human_review(
     assert result.risk.level == RiskLevel.HIGH
     assert ReviewReason.HIGH_RISK in result.review.reasons
     assert result.action_plan == []
+
+
+def test_triage_api_records_history_and_builds_human_review_queue(
+    tmp_path: Path,
+) -> None:
+    """每次 API 分诊都应入本地历史，且仅复核案件出现在队列中。"""
+
+    with build_client(tmp_path) as client:
+        normal_response = client.post(
+            "/api/v1/triage",
+            json={
+                "request_id": "api_history_normal",
+                "text": "西门照明故障",
+            },
+        )
+        review_response = client.post(
+            "/api/v1/triage",
+            json={
+                "request_id": "api_history_review",
+                "text": "东门卫生间没水，有游客摔倒。",
+            },
+        )
+        history_response = client.get("/api/v1/case-history")
+        review_queue_response = client.get("/api/v1/review-queue")
+
+    history = CaseHistoryResponse.model_validate(history_response.json())
+    review_queue = HumanReviewQueueResponse.model_validate(
+        review_queue_response.json()
+    )
+
+    assert normal_response.status_code == 200
+    assert review_response.status_code == 200
+    assert history_response.status_code == 200
+    assert review_queue_response.status_code == 200
+    assert {record.result.request_id for record in history.records} == {
+        "api_history_normal",
+        "api_history_review",
+    }
+    assert [record.result.request_id for record in review_queue.records] == [
+        "api_history_review"
+    ]
+    assert review_queue.records[0].requires_human_review is True
 
 
 def test_triage_api_returns_a_case_result_for_malformed_json(
