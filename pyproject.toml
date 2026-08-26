@@ -9,6 +9,7 @@ description = "Scenic-service request triage and handling demo"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "chromadb>=1.5,<2.0",
     "pydantic>=2.10,<3.0",
 ]
 
