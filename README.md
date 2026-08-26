@@ -58,6 +58,21 @@ python -m streamlit run app\ui\streamlit_app.py
 这些内容全部是项目演示配置，不代表真实景区角色、调度路径或服务时限。配置文件会在
 FastAPI 启动时经 Pydantic 校验；修改 YAML 后，请重启 FastAPI 服务再测试。
 
+## 演示评估
+
+项目提供一组可重复执行的景区服务演示案例，用于验证低风险设施故障、字段缺失、
+高风险强制人工复核、知识库未命中、模型输出解析失败和模型调用失败等安全边界。
+在已激活的 `service-request-agent` 环境中运行：
+
+```powershell
+python -m app.evaluation
+```
+
+命令会输出一份经过 Pydantic 校验的 JSON 报告；全部案例符合预期时退出码为 `0`，
+否则为 `1`。案例文件位于
+`scenarios/scenic_service/evaluation_cases.yaml`。它只验证本项目的演示规则和安全
+约束，不代表真实景区服务规则，也不宣称模型准确率。
+
 ## 测试
 
 运行全部测试：
@@ -70,4 +85,10 @@ python -m pytest
 
 ```powershell
 python -m pytest tests\rules\test_scenic_service_config.py
+```
+
+只验证评估模块：
+
+```powershell
+python -m pytest tests\evaluation\test_runner.py
 ```

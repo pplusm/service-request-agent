@@ -1,0 +1,200 @@
+# 这是一组验证项目演示规则和安全兜底行为的基线案例，不是现实景区数据或准确率评估集。
+dataset_name: scenic_service_safety_baseline
+scenario: scenic_service
+
+cases:
+  # 三条低风险案例分别覆盖当前 YAML 中的三类设施故障。
+  - case_id: eval_restroom_normal
+    description: 已知地点的卫生间无水，可返回带演示来源的维护跟进建议。
+    provider_behavior: demo
+    request:
+      request_id: eval_restroom_normal
+      text: 东门附近卫生间没水。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: false
+      minimum_review_reasons: []
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 1
+
+  - case_id: eval_sign_normal
+    description: 已知地点的指示牌损坏，应使用演示维护建议。
+    provider_behavior: demo
+    request:
+      request_id: eval_sign_normal
+      text: 西门指示牌损坏。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: false
+      minimum_review_reasons: []
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 1
+
+  - case_id: eval_lighting_normal
+    description: 已知地点的照明故障，应使用演示维护建议。
+    provider_behavior: demo
+    request:
+      request_id: eval_lighting_normal
+      text: 北门照明故障。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: false
+      minimum_review_reasons: []
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 1
+
+  # 三条缺少地点的案例必须被转给人工，且不得保留自动建议。
+  - case_id: eval_restroom_missing_location
+    description: 卫生间无水但没有地点，必须补充信息后人工确认。
+    provider_behavior: demo
+    request:
+      request_id: eval_restroom_missing_location
+      text: 卫生间没水。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: true
+      minimum_review_reasons: [missing_fields]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 0
+
+  - case_id: eval_sign_missing_location
+    description: 指示牌损坏但没有地点，必须转人工补充信息。
+    provider_behavior: demo
+    request:
+      request_id: eval_sign_missing_location
+      text: 指示牌损坏。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: true
+      minimum_review_reasons: [missing_fields]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 0
+
+  - case_id: eval_lighting_missing_location
+    description: 照明故障但没有地点，必须转人工补充信息。
+    provider_behavior: demo
+    request:
+      request_id: eval_lighting_missing_location
+      text: 照明故障。
+    expected:
+      event_type: facility_fault
+      risk_level: low
+      requires_human_review: true
+      minimum_review_reasons: [missing_fields]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 0
+
+  # 命中演示风险词后，即使模型可解析也必须升级为高风险人工复核。
+  - case_id: eval_lighting_high_risk
+    description: 照明故障伴随摔倒线索，必须强制高风险人工复核。
+    provider_behavior: demo
+    request:
+      request_id: eval_lighting_high_risk
+      text: 西门照明故障，有游客摔倒。
+    expected:
+      event_type: facility_fault
+      risk_level: high
+      requires_human_review: true
+      minimum_review_reasons: [high_risk]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 0
+
+  - case_id: eval_sign_high_risk
+    description: 指示牌损坏伴随受伤线索，必须强制高风险人工复核。
+    provider_behavior: demo
+    request:
+      request_id: eval_sign_high_risk
+      text: 东门指示牌损坏，有人受伤。
+    expected:
+      event_type: facility_fault
+      risk_level: high
+      requires_human_review: true
+      minimum_review_reasons: [high_risk]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: true
+      action_plan_count: 0
+
+  - case_id: eval_high_risk_without_knowledge
+    description: 高风险线索即使没有知识库命中，也必须强制人工复核。
+    provider_behavior: demo
+    request:
+      request_id: eval_high_risk_without_knowledge
+      text: 东门有人受伤，需要帮助。
+    expected:
+      event_type: other_unknown
+      risk_level: high
+      requires_human_review: true
+      minimum_review_reasons: [high_risk, knowledge_not_found]
+      knowledge_hit: false
+      model_call_success: null
+      model_output_parse_success: null
+      action_plan_count: 0
+
+  # 以下三条是计划书中要求可复盘的失败路径。
+  - case_id: eval_knowledge_not_found
+    description: 无关的航班咨询没有演示知识来源，必须跳过模型并人工复核。
+    provider_behavior: demo
+    request:
+      request_id: eval_knowledge_not_found
+      text: 航班改签咨询。
+    expected:
+      event_type: other_unknown
+      risk_level: unassessed
+      requires_human_review: true
+      minimum_review_reasons: [knowledge_not_found]
+      knowledge_hit: false
+      model_call_success: null
+      model_output_parse_success: null
+      action_plan_count: 0
+
+  - case_id: eval_invalid_model_output
+    description: 模型故意返回不完整 JSON 时，必须保留解析失败并人工复核。
+    provider_behavior: invalid_output
+    request:
+      request_id: eval_invalid_model_output
+      text: 东门附近卫生间没水。
+    expected:
+      event_type: other_unknown
+      risk_level: unassessed
+      requires_human_review: true
+      minimum_review_reasons: [invalid_model_output]
+      knowledge_hit: true
+      model_call_success: true
+      model_output_parse_success: false
+      action_plan_count: 0
+
+  - case_id: eval_provider_error
+    description: 模型提供方故意报错时，必须返回可校验的人工复核结果。
+    provider_behavior: provider_error
+    request:
+      request_id: eval_provider_error
+      text: 东门附近卫生间没水。
+    expected:
+      event_type: other_unknown
+      risk_level: unassessed
+      requires_human_review: true
+      minimum_review_reasons: [llm_error]
+      knowledge_hit: true
+      model_call_success: false
+      model_output_parse_success: null
+      action_plan_count: 0
