@@ -35,6 +35,27 @@ python -m uvicorn app.api.main:app --reload
 然后在浏览器打开 `http://127.0.0.1:8000/docs`，使用
 `POST /api/v1/triage` 接口测试文本诉求。
 
+## 可选：接入 OpenAI-compatible 模型
+
+默认的 `LLM_PROVIDER=demo` 使用免费的本地确定性演示模型，不会调用任何外部 API。
+项目已经封装了 OpenAI-compatible 的 `/chat/completions` 提供方；只有在**重启 FastAPI
+之前**显式设置下列 PowerShell 环境变量时，才会向你选择的模型服务发送请求：
+
+```powershell
+$env:LLM_PROVIDER = "openai_compatible"
+$env:OPENAI_COMPATIBLE_BASE_URL = "https://你的兼容接口根地址/v1"
+$env:OPENAI_COMPATIBLE_API_KEY = "你的密钥"
+$env:OPENAI_COMPATIBLE_MODEL = "你的模型名称"
+$env:OPENAI_COMPATIBLE_TIMEOUT_SECONDS = "30"
+$env:OPENAI_COMPATIBLE_STRUCTURED_OUTPUT_MODE = "json_object"
+python -m uvicorn app.api.main:app --reload
+```
+
+`.env.example` 只是一份不含真实密钥的配置参考，当前项目不会自动读取 `.env` 文件。
+可将接口根地址和模型名称替换为 Qwen 或其他服务商提供的 OpenAI-compatible 参数；是否收费、
+额度和模型能力由对应服务商决定。无论使用哪个提供方，原始模型输出仍会经过 Pydantic 校验；
+调用失败、输出无法解析或不符合契约时，系统都会转人工复核。
+
 ## 本地操作页面
 
 先保持上方 FastAPI 服务正在运行。然后在项目根目录打开第二个、已激活

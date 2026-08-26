@@ -22,7 +22,7 @@ from app.case_history.repository import (
 )
 from app.api.schemas import TriageApiRequest
 from app.api.service import TriageApiService, build_request_validation_error_result
-from app.llm.demo_provider import DemoLLMProvider
+from app.llm.factory import build_model_provider_from_environment
 from app.llm.provider import LLMProvider
 from app.rag.knowledge_store import ChromaKnowledgeStore
 from app.schemas.models import ServiceCaseResult
@@ -40,7 +40,9 @@ def create_app(
     knowledge_directory: Path = DEFAULT_KNOWLEDGE_DIRECTORY,
     chroma_directory: Path = DEFAULT_CHROMA_DIRECTORY,
     case_history_database: Path = DEFAULT_CASE_HISTORY_DATABASE,
-    provider_factory: Callable[[], LLMProvider] = DemoLLMProvider,
+    provider_factory: Callable[[], LLMProvider] = (
+        build_model_provider_from_environment
+    ),
 ) -> FastAPI:
     """创建可测试的 FastAPI 应用；测试可注入独立的临时知识库目录。"""
 
