@@ -34,3 +34,15 @@ python -m uvicorn app.api.main:app --reload
 
 然后在浏览器打开 `http://127.0.0.1:8000/docs`，使用
 `POST /api/v1/triage` 接口测试文本诉求。
+
+## 本地操作页面
+
+先保持上方 FastAPI 服务正在运行。然后在项目根目录打开第二个、已激活
+`service-request-agent` 环境的 PowerShell 窗口，运行：
+
+```powershell
+python -m streamlit run app\ui\streamlit_app.py
+```
+
+浏览器打开 `http://localhost:8501`。在页面中输入案件编号和景区服务诉求，
+页面会调用本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。

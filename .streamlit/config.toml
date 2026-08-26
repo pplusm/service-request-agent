@@ -1,0 +1,3 @@
+# 不收集匿名使用统计，首次启动时也不再要求输入邮箱。
+[browser]
+gatherUsageStats = false
