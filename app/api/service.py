@@ -44,6 +44,7 @@ class TriageApiService:
         service_request = ServiceRequestInput(
             request_id=request.request_id,
             text=request.text,
+            image=request.image,
         )
         return self._agent.run(service_request)
 
@@ -59,8 +60,16 @@ def build_request_validation_error_result(
         message = str(error.get("msg", "invalid request body"))
         messages.append(f"{location}: {message}".strip(": "))
 
+    from app.schemas.models import ReviewReason
+
+    image_validation_failed = any(
+        "image" in error.get("loc", []) for error in validation_errors
+    )
     return build_input_validation_result(
         request_id=_FALLBACK_REQUEST_ID,
         missing_fields=["request_body"],
         validation_errors=messages,
+        additional_reasons=(
+            [ReviewReason.INVALID_IMAGE] if image_validation_failed else None
+        ),
     )

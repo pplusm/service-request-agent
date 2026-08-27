@@ -4,9 +4,12 @@
 
 ## MVP 范围
 
-- 仅支持景区服务文本输入。
-- 使用 Pydantic 校验 JSON 输出。
-- 高风险、知识库未命中、字段缺失与模型解析失败均转人工复核。
+- 支持景区服务文本输入，以及可选的单张图片输入。
+- 图片先经过 `vision_extract` 节点，输出受 Pydantic 约束的结构化视觉观察。
+- 视觉观察再进入图文融合：只比较有限的演示地点、设施和状态概念，并输出一致、冲突、证据不足或未评估。
+- 默认视觉模型只确认图片已接收，不进行真实像素识别；因此图文融合会标记为“未评估”，不会虚构识图结论。
+- 使用 Pydantic 校验所有 Agent JSON 输出。
+- 高风险、知识库未命中、字段缺失、视觉失败、模型解析失败、图文冲突和图文证据不足均转人工复核。
 - 只使用演示数据和可追溯知识引用。
 - 默认使用免费的本地确定性演示模型，不调用外部 API。
 
@@ -20,9 +23,9 @@
 
 ## 暂不实现
 
-- 图片输入。
-- 真实业务系统、真实个人数据和线上调度。
-- 高风险事件的自动最终决策。
+- 真实图片像素识别、OCR 结论或由图片直接产生的自动处置决定。
+- 多张图片、视频、音频以及真实业务系统接入。
+- 真实个人数据、线上调度和高风险事件的自动最终决策。
 
 ## 终端演示
 
@@ -43,7 +46,7 @@ python -m uvicorn app.api.main:app --reload
 ```
 
 然后在浏览器打开 `http://127.0.0.1:8000/docs`，使用
-`POST /api/v1/triage` 接口测试文本诉求。
+`POST /api/v1/triage` 接口测试文本诉求或“文本 + 图片”诉求。
 
 第二窗口启动 Streamlit 操作页面：
 
@@ -53,15 +56,50 @@ Set-Location E:\project\agent\service-request-agent
 python -m streamlit run app\ui\streamlit_app.py
 ```
 
-浏览器打开 `http://127.0.0.1:8501`。在页面中输入案件编号和景区服务诉求，页面会调用
-本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。默认的模拟模型完全在本机运行，
-不需要 API Key。
+浏览器打开 `http://127.0.0.1:8501`。在页面中输入案件编号和景区服务诉求，可选上传一张
+JPG、PNG 或 WebP 图片。页面会调用本地 API，并只展示再次通过 Pydantic 校验的案件 JSON。
+默认的文本和视觉模拟模型完全在本机运行，不需要 API Key。
+
+### 图片请求的 JSON 形状
+
+API 的图片字段是可选的。服务端只在本次请求内暂存 Base64 图片，结果和本地案件历史只保留
+媒体类型、文件大小、SHA-256 摘要和结构化视觉观察，不保存 `data_base64`：
+
+```json
+{
+  "request_id": "demo_image_001",
+  "text": "西门照明故障",
+  "image": {
+    "media_type": "image/png",
+    "data_base64": "ZGVtby1pbWFnZQ==",
+    "filename": "demo.png"
+  }
+}
+```
+
+上例中的 Base64 只是演示字节，不代表真实图片。使用默认 `VISION_PROVIDER=demo` 时，结果会
+明确标记 `is_demo_observation=true`，并在 `multimodal_fusion` 中返回 `not_assessed`；这是因为
+本地 Demo 没有分析像素。视觉调用失败、输出无法校验、图文冲突或图文证据不足时，结果都会
+自动进入人工复核。
+
+### 图文融合结果
+
+当视觉观察已通过 Pydantic 校验后，结果会包含 `multimodal_fusion`。它只使用项目演示词典中
+有限的地点、设施和状态概念进行比较，不是通用图像识别能力：
+
+- `consistent`：图片观察在演示概念范围内支持文本中的同一设施或状态。
+- `conflict`：地点、设施或状态存在明确冲突，必须人工确认，自动建议会被清空。
+- `insufficient_evidence`：置信度低、存在不确定说明，或任一侧没有可核对证据，必须人工复核。
+- `not_assessed`：默认本地 Demo 没有分析真实像素，必须人工复核。
+
+只有配置了支持图片消息的外部视觉模型时，才可能出现由视觉观察驱动的 `consistent` 或
+`conflict`；即使如此，所有输出仍会经过 Pydantic 校验，并且不保存原始图片内容。
 
 ## 可选：接入 OpenAI-compatible 模型
 
 默认的 `LLM_PROVIDER=demo` 使用免费的本地确定性演示模型，不会调用任何外部 API。
-项目已经封装了 OpenAI-compatible 的 `/chat/completions` 提供方；只有在**重启 FastAPI
-之前**显式设置下列 PowerShell 环境变量时，才会向你选择的模型服务发送请求：
+项目已经封装了文本和视觉共用的 OpenAI-compatible `/chat/completions` 提供方；只有在**重启
+FastAPI 之前**显式设置下列 PowerShell 环境变量时，才会向你选择的模型服务发送请求：
 
 ```powershell
 $env:LLM_PROVIDER = "openai_compatible"
@@ -70,13 +108,18 @@ $env:OPENAI_COMPATIBLE_API_KEY = "你的密钥"
 $env:OPENAI_COMPATIBLE_MODEL = "你的模型名称"
 $env:OPENAI_COMPATIBLE_TIMEOUT_SECONDS = "30"
 $env:OPENAI_COMPATIBLE_STRUCTURED_OUTPUT_MODE = "json_object"
+# 如果要让图片走兼容视觉模型，再打开这一项；该模型必须支持 image_url 消息。
+# $env:VISION_PROVIDER = "openai_compatible"
 python -m uvicorn app.api.main:app --reload
 ```
 
 `.env.example` 只是一份不含真实密钥的配置参考，当前项目不会自动读取 `.env` 文件。
 可将接口根地址和模型名称替换为 Qwen 或其他服务商提供的 OpenAI-compatible 参数；是否收费、
-额度和模型能力由对应服务商决定。无论使用哪个提供方，原始模型输出仍会经过 Pydantic 校验；
-调用失败、输出无法解析或不符合契约时，系统都会转人工复核。
+额度和模型能力由对应服务商决定。文本模型和视觉模型当前共用同一组
+`OPENAI_COMPATIBLE_*` 配置，因此切换视觉提供方时应选择支持图片消息的模型。无论使用哪个
+提供方，原始模型输出仍会经过 Pydantic 校验；调用失败、输出无法解析或不符合契约时，系统
+都会转人工复核。没有 API 或不想产生费用时，保持 `LLM_PROVIDER=demo` 和
+`VISION_PROVIDER=demo` 即可。
 
 ## 本地操作页面
 
@@ -139,6 +182,12 @@ python -m pytest tests\rules\test_scenic_service_config.py
 
 ```powershell
 python -m pytest tests\evaluation\test_runner.py
+```
+
+只验证图文融合的 10 条以上演示样例：
+
+```powershell
+python -m pytest tests\agent\test_multimodal_fusion.py
 ```
 
 ## 演示截图

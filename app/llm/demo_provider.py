@@ -103,9 +103,15 @@ def _read_agent_context(
         if not isinstance(raw_references, list):
             raise ValueError("demo provider references must be a list")
 
-        service_request = ServiceRequestInput.model_validate(
-            payload.get("service_request")
-        )
+        raw_service_request = payload.get("service_request")
+        if not isinstance(raw_service_request, dict):
+            raise ValueError("demo provider service_request must be an object")
+        # 文本模型只需要文本字段；图片摘要不是 ImageAttachment，不能当作 base64 再解析。
+        raw_service_request = dict(raw_service_request)
+        raw_service_request.pop("image", None)
+        # 去掉图片后将渠道还原为 text，避免触发核心输入模型的一致性校验。
+        raw_service_request["source_channel"] = "text"
+        service_request = ServiceRequestInput.model_validate(raw_service_request)
         references = [
             KnowledgeReference.model_validate(reference)
             for reference in raw_references

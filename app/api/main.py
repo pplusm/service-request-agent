@@ -27,6 +27,8 @@ from app.llm.factory import build_model_provider_from_environment
 from app.llm.provider import LLMProvider
 from app.rag.knowledge_store import ChromaKnowledgeStore
 from app.schemas.models import ServiceCaseResult
+from app.vision.factory import build_vision_provider_from_environment
+from app.vision.provider import VisionProvider
 
 
 # 固定从 app/api/main.py 回到项目根目录，避免依赖启动命令所在目录。
@@ -50,6 +52,9 @@ def create_app(
     provider_factory: Callable[[], LLMProvider] = (
         build_model_provider_from_environment
     ),
+    vision_provider_factory: Callable[[], VisionProvider] = (
+        build_vision_provider_from_environment
+    ),
 ) -> FastAPI:
     """创建可测试的 FastAPI 应用；测试可注入独立的临时知识库目录。"""
 
@@ -64,6 +69,7 @@ def create_app(
             TriageAgent(
                 knowledge_store=knowledge_store,
                 model_provider=provider_factory(),
+                vision_provider=vision_provider_factory(),
             )
         )
         # 历史库只保存通过 Pydantic 校验的结果 JSON，不单独保存原始请求体。
@@ -74,7 +80,7 @@ def create_app(
 
     app = FastAPI(
         title="景区服务诉求分诊与处置 Agent",
-        description="仅使用本地演示资料的文本诉求分诊接口。",
+        description="使用本地演示资料的文本和可选图片诉求分诊接口。",
         version="0.1.0",
         lifespan=lifespan,
     )

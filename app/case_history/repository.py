@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -16,6 +18,9 @@ from app.schemas.models import ServiceCaseResult
 
 
 _MAX_RETURNED_RECORDS = 100
+_LEGACY_FUSION_REVIEW_NOTE = (
+    "历史记录创建于图文融合字段上线前，无法补充核对，需人工复核。"
+)
 _CREATE_TABLE_STATEMENT = """
 CREATE TABLE IF NOT EXISTS case_history (
     record_id TEXT PRIMARY KEY,
@@ -109,16 +114,67 @@ class LocalCaseHistoryRepository:
         )
 
     def _initialize_database(self) -> None:
-        """在首次启动时创建表和索引；已有数据库不会清除历史记录。"""
+        """创建表和索引，并保守迁移已知的旧版图片历史记录。"""
 
         try:
             with self._connection() as connection:
                 with connection:
                     connection.executescript(_CREATE_TABLE_STATEMENT)
+                    self._migrate_legacy_multimodal_records(connection)
         except sqlite3.Error as error:
             raise CaseHistoryStorageError(
                 f"failed to initialize local case history: {error}"
             ) from error
+
+    @staticmethod
+    def _migrate_legacy_multimodal_records(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """补齐图文融合字段上线前的已知图片记录，并强制转人工复核。
+
+        只处理视觉调用和解析都成功、且恰好缺少 ``multimodal_fusion`` 的
+        旧结构。其他损坏或不明格式的 JSON 保持原样，仍由后续严格校验拒绝，
+        避免把未知数据伪装成可信案件。
+        """
+
+        rows = connection.execute(
+            "SELECT record_id, result_json FROM case_history"
+        ).fetchall()
+        updates: list[tuple[int, str, str]] = []
+
+        for row in rows:
+            migrated_result_json = _build_legacy_multimodal_result_json(
+                str(row["result_json"])
+            )
+            if migrated_result_json is None:
+                continue
+
+            try:
+                # 写回前仍需完整通过当前 Pydantic 契约，不能依赖迁移条件本身。
+                validated_result = ServiceCaseResult.model_validate_json(
+                    migrated_result_json
+                )
+            except ValidationError:
+                # 旧记录还有其他不安全问题时不擅自修补，保留给严格读取逻辑处理。
+                continue
+
+            updates.append(
+                (
+                    int(validated_result.review.requires_human_review),
+                    validated_result.model_dump_json(),
+                    str(row["record_id"]),
+                )
+            )
+
+        if updates:
+            connection.executemany(
+                """
+                UPDATE case_history
+                SET requires_human_review = ?, result_json = ?
+                WHERE record_id = ?
+                """,
+                updates,
+            )
 
     def _list_records(self, query: str) -> list[CaseHistoryRecord]:
         """执行只读查询，并把每条 JSON 重新解析为严格 Pydantic 模型。"""
@@ -156,3 +212,83 @@ class LocalCaseHistoryRepository:
             yield connection
         finally:
             connection.close()
+
+
+def _build_legacy_multimodal_result_json(result_json: str) -> str | None:
+    """把唯一可识别的旧版视觉记录转换为保守的当前 JSON 结构。
+
+    本函数只填充当时尚不存在的图文融合结论及其必需的人工复核标记；
+    不会推测图片内容，也不会修复其他字段错误。
+    """
+
+    try:
+        payload: Any = json.loads(result_json)
+    except json.JSONDecodeError:
+        return None
+
+    # 旧版序列化可能完全没有该键，也可能按当时的默认值写入 null。
+    # 只有已有非空融合结论的当前记录才不应被迁移。
+    if (
+        not isinstance(payload, dict)
+        or payload.get("multimodal_fusion") is not None
+    ):
+        return None
+
+    image = payload.get("image")
+    observation = payload.get("vision_observation")
+    diagnostics = payload.get("diagnostics")
+    review = payload.get("review")
+    if not (
+        isinstance(image, dict)
+        and isinstance(observation, dict)
+        and isinstance(diagnostics, dict)
+        and isinstance(review, dict)
+    ):
+        return None
+
+    # 只有当旧记录已明确表示视觉调用和输出解析成功时，才属于已知兼容场景。
+    if (
+        diagnostics.get("vision_call_success") is not True
+        or diagnostics.get("vision_output_parse_success") is not True
+    ):
+        return None
+
+    reasons = review.get("reasons")
+    review_note = review.get("review_note")
+    if (
+        not isinstance(reasons, list)
+        or not all(isinstance(reason, str) for reason in reasons)
+        or not isinstance(review_note, str)
+    ):
+        return None
+
+    # 本地 demo 没有识别真实像素，只能标为“未评估”；其他旧视觉结果也一律保守处理。
+    is_demo_observation = observation.get("is_demo_observation") is True
+    if is_demo_observation:
+        fusion_status = "not_assessed"
+        fusion_note = "历史本地演示视觉模型未分析图片像素，无法核对图文信息。"
+    else:
+        fusion_status = "insufficient_evidence"
+        fusion_note = "历史视觉记录缺少图文融合依据，无法确认图文一致性。"
+
+    payload["multimodal_fusion"] = {
+        "status": fusion_status,
+        "text_concepts": [],
+        "image_concepts": [],
+        "conflict_fields": [],
+        "note": fusion_note,
+        "is_demo_assessment": is_demo_observation,
+    }
+    # 非一致融合结果不能沿用旧的自动建议，必须进入人工复核队列。
+    payload["action_plan"] = []
+    review["requires_human_review"] = True
+    if "multimodal_insufficient_evidence" not in reasons:
+        review["reasons"] = [
+            *reasons,
+            "multimodal_insufficient_evidence",
+        ]
+    combined_note = " ".join(
+        note for note in (review_note.strip(), _LEGACY_FUSION_REVIEW_NOTE) if note
+    )
+    review["review_note"] = combined_note[:500]
+    return json.dumps(payload, ensure_ascii=False)

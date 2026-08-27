@@ -30,6 +30,9 @@ def submit_triage_request(
     api_base_url: str,
     request_id: str,
     text: str,
+    image_base64: str | None = None,
+    image_media_type: str | None = None,
+    image_filename: str | None = None,
     timeout_seconds: float = 15.0,
 ) -> ServiceCaseResult:
     """提交文本诉求，并只返回经过 Pydantic 校验的案件结果。
@@ -38,10 +41,15 @@ def submit_triage_request(
     ``ServiceCaseResult`` 的人工复核结果，因此仍按正常结果解析。
     """
 
-    request_payload = json.dumps(
-        {"request_id": request_id, "text": text},
-        ensure_ascii=False,
-    ).encode("utf-8")
+    payload: dict[str, object] = {"request_id": request_id, "text": text}
+    if image_base64 is not None:
+        # 页面只传图片内容给本次请求；服务端结果不会回传或保存 base64。
+        payload["image"] = {
+            "data_base64": image_base64,
+            "media_type": image_media_type,
+            "filename": image_filename,
+        }
+    request_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     http_request = Request(
         url=_build_api_url(api_base_url, "/api/v1/triage"),
         data=request_payload,

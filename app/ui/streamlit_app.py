@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from html import escape
 from datetime import datetime
@@ -56,6 +57,38 @@ def _render_case_result(result: ServiceCaseResult) -> None:
 
     st.subheader("识别信息")
     st.json(result.entities.model_dump(mode="json"))
+
+    if result.image is not None:
+        st.subheader("图片观察")
+        st.json(
+            {
+                "图片元数据": result.image.model_dump(mode="json"),
+                "结构化观察": (
+                    result.vision_observation.model_dump(mode="json")
+                    if result.vision_observation is not None
+                    else None
+                ),
+            }
+        )
+
+    if result.multimodal_fusion is not None:
+        # 融合结果只来自受控概念和已校验的视觉观察，不能把它解释成真实图片识别结论。
+        st.subheader("图文融合判断")
+        st.json(
+            {
+                "状态": result.multimodal_fusion.status.value,
+                "文本可核对概念": result.multimodal_fusion.text_concepts,
+                "图片可核对概念": result.multimodal_fusion.image_concepts,
+                "冲突字段": [
+                    field.value
+                    for field in result.multimodal_fusion.conflict_fields
+                ],
+                "说明": result.multimodal_fusion.note,
+                "是否为本地演示判断": (
+                    result.multimodal_fusion.is_demo_assessment
+                ),
+            }
+        )
 
     st.subheader("演示建议")
     if result.action_plan:
@@ -171,7 +204,7 @@ def main() -> None:
 
     st.set_page_config(page_title="景区服务诉求分诊", layout="wide")
     st.header("景区服务诉求分诊")
-    st.caption("多模态服务诉求分诊与处置 Agent · 第一阶段：景区服务文本演示")
+    st.caption("多模态服务诉求分诊与处置 Agent · 文本 + 图片受控观察演示")
 
     # 仅在本次浏览器会话首次加载页面时生成编号，之后允许用户稳定地手动修改。
     if "triage_request_id" not in st.session_state:
@@ -200,6 +233,19 @@ def main() -> None:
                 max_chars=2000,
                 height=140,
             )
+            uploaded_image = st.file_uploader(
+                "上传图片（可选）",
+                type=["jpg", "jpeg", "png", "webp"],
+                help="当前使用本地演示视觉模型，只记录结构化观察，不代表真实像素识别。",
+            )
+            if uploaded_image is not None:
+                # 上传阶段先限制大小，避免把超大文件编码后才被 API 拒绝。
+                image_bytes = uploaded_image.getvalue()
+                if len(image_bytes) > 5 * 1024 * 1024:
+                    st.error("图片大小不能超过 5 MiB。")
+                    uploaded_image = None
+                else:
+                    st.image(image_bytes, caption="本次待提交图片", width=260)
             submitted = st.form_submit_button("提交分诊")
 
         if submitted:
@@ -209,10 +255,23 @@ def main() -> None:
             else:
                 with st.spinner("正在调用本地 Agent..."):
                     try:
+                        encoded_image = None
+                        image_media_type = None
+                        image_filename = None
+                        if uploaded_image is not None:
+                            # 仅在提交时编码，服务端处理结束后不会保存这段 base64。
+                            encoded_image = base64.b64encode(
+                                uploaded_image.getvalue()
+                            ).decode("ascii")
+                            image_media_type = uploaded_image.type
+                            image_filename = uploaded_image.name
                         result = submit_triage_request(
                             api_base_url=api_base_url,
                             request_id=request_id,
                             text=text,
+                            image_base64=encoded_image,
+                            image_media_type=image_media_type,
+                            image_filename=image_filename,
                         )
                     except TriageApiClientError as error:
                         st.error(str(error))
