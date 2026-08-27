@@ -121,6 +121,34 @@ python -m uvicorn app.api.main:app --reload
 都会转人工复核。没有 API 或不想产生费用时，保持 `LLM_PROVIDER=demo` 和
 `VISION_PROVIDER=demo` 即可。
 
+## 可选：本地运行 Qwen2.5-VL 视觉模型
+
+已下载 Qwen2.5-VL 模型且电脑具备可用 NVIDIA GPU 时，可把图片视觉抽取切换为
+`transformers_local`。文本分诊模型仍可保持免费的 `LLM_PROVIDER=demo`，不会调用外部 API。
+本地模型目录必须位于项目仓库外，不能加入 Git；本项目只在内存中解码提交的图片，不会把
+Base64 写入案件历史。
+
+首次配置时，CUDA 版 PyTorch 需要按照显卡和 Python 版本从 PyTorch 官方索引安装；随后可安装
+其余可选依赖：
+
+```powershell
+python -m pip install -e ".[dev,local-vision]"
+```
+
+在启动 FastAPI **之前**，于已激活项目 Conda 环境的 PowerShell 窗口设置：
+
+```powershell
+$env:LLM_PROVIDER = "demo"
+$env:VISION_PROVIDER = "transformers_local"
+$env:LOCAL_QWEN_VISION_MODEL_PATH = "E:\project\Qwen2.5-VL-3B-Instruct"
+python -m uvicorn app.api.main:app --reload
+```
+
+本地 Provider 会在第一张图片提交时才加载模型，并使用 4-bit 量化与串行推理控制显存占用。
+它不承诺识别准确率；模型调用失败、输出不是合法 JSON、字段未通过 Pydantic 校验、图文证据
+不足或高风险案件，都会进入人工复核。`case_history.sqlite3` 只保存通过校验的结果，不会保存
+原始图片内容。
+
 ## 本地操作页面
 
 启动命令见上方“本地启动”。页面包含“提交分诊”“案件历史”和“待人工复核”三个标签页。

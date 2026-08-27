@@ -23,6 +23,13 @@ dev = [
     "httpx>=0.27,<1.0",
     "pytest>=8.0,<9.0",
 ]
+local-vision = [
+    # CUDA 版 PyTorch 需从 PyTorch 官方索引单独安装，不能在这里固定为 CPU 包。
+    "accelerate>=1.12,<2.0",
+    "bitsandbytes>=0.49,<0.50",
+    "Pillow>=10.0,<13.0",
+    "transformers>=4.57,<4.58",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

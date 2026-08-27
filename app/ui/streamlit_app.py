@@ -272,6 +272,9 @@ def main() -> None:
                             image_base64=encoded_image,
                             image_media_type=image_media_type,
                             image_filename=image_filename,
+                            # 本地视觉模型首次载入权重需要较长时间，避免页面在
+                            # 合理完成前按默认 15 秒超时；文本请求也可安全使用该值。
+                            timeout_seconds=120.0,
                         )
                     except TriageApiClientError as error:
                         st.error(str(error))
