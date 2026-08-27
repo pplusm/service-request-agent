@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import mimetypes
 import sys
 from pathlib import Path
 
@@ -16,13 +18,18 @@ from app.evaluation.models import (
     EvaluationCaseSet,
     EvaluationReport,
     ProviderBehavior,
+    VisionBehavior,
 )
+from app.evaluation.vision_provider import EvaluationVisionProvider
 from app.llm.demo_provider import DemoLLMProvider
 from app.llm.mock_provider import MockLLMProvider
 from app.llm.provider import LLMProvider
 from app.rag.knowledge_store import ChromaKnowledgeStore
-from app.rules.scenic_service_config import load_scenic_service_configuration
-from app.schemas.models import ServiceCaseResult
+from app.rules.scenic_service_config import (
+    ScenicServiceConfiguration,
+    load_scenic_service_configuration,
+)
+from app.schemas.models import ServiceCaseResult, ServiceRequestInput
 
 
 # 从本文件回到项目根目录，避免运行命令依赖当前 PowerShell 所在目录。
@@ -34,6 +41,9 @@ DEFAULT_KNOWLEDGE_DIRECTORY = (
     PROJECT_ROOT / "data" / "scenic_service" / "knowledge"
 )
 DEFAULT_CHROMA_DIRECTORY = PROJECT_ROOT / "chroma_data"
+DEFAULT_IMAGE_FIXTURE_DIRECTORY = (
+    PROJECT_ROOT / "data" / "scenic_service" / "evaluation_images"
+)
 
 
 class EvaluationDatasetError(ValueError):
@@ -74,17 +84,31 @@ def run_evaluation(
     *,
     knowledge_directory: Path = DEFAULT_KNOWLEDGE_DIRECTORY,
     persist_directory: Path = DEFAULT_CHROMA_DIRECTORY,
+    image_fixture_directory: Path = DEFAULT_IMAGE_FIXTURE_DIRECTORY,
 ) -> EvaluationReport:
     """执行整组案例，返回可被 Pydantic 再次解析的汇总 JSON 模型。"""
 
-    # 所有案例共享同一份本地知识库；案例间只替换演示模型的故障行为。
+    # 所有案例共享同一份本地知识库；每条图文案例按 YAML 注入确定性视觉观察。
     store = ChromaKnowledgeStore(persist_directory=Path(persist_directory))
     store.index_directory(Path(knowledge_directory))
     agents = _build_agents(store=store)
 
     case_results: list[EvaluationCaseResult] = []
     for case in case_set.cases:
-        actual = agents[case.provider_behavior].run(case.request)
+        request = _build_case_request(
+            case=case,
+            image_fixture_directory=Path(image_fixture_directory),
+        )
+        if case.vision_behavior is None:
+            agent = agents[case.provider_behavior]
+        else:
+            # 视觉提供方只在该条评测中使用，不影响产品默认的 Demo 视觉模型。
+            agent = _build_agent(
+                store=store,
+                provider_behavior=case.provider_behavior,
+                vision_behavior=case.vision_behavior,
+            )
+        actual = agent.run(request)
         mismatches = compare_case_result(case=case, actual=actual)
         case_results.append(
             EvaluationCaseResult(
@@ -119,25 +143,98 @@ def run_evaluation(
 def _build_agents(*, store: ChromaKnowledgeStore) -> dict[ProviderBehavior, TriageAgent]:
     """为正常、解析失败和调用失败三种本地行为各建一个 Agent。"""
 
+    return {
+        behavior: _build_agent(
+            store=store,
+            provider_behavior=behavior,
+        )
+        for behavior in ProviderBehavior
+    }
+
+
+def _build_agent(
+    *,
+    store: ChromaKnowledgeStore,
+    provider_behavior: ProviderBehavior,
+    vision_behavior: VisionBehavior | None = None,
+) -> TriageAgent:
+    """为一条评测案例构建本地 Agent，所有提供方均不调用外部 API。"""
+
     configuration = load_scenic_service_configuration()
-    providers: dict[ProviderBehavior, LLMProvider] = {
-        ProviderBehavior.DEMO: DemoLLMProvider(configuration=configuration),
-        ProviderBehavior.INVALID_OUTPUT: DemoLLMProvider(
+    provider = _build_llm_provider(
+        behavior=provider_behavior,
+        configuration=configuration,
+    )
+    vision_provider = (
+        EvaluationVisionProvider(vision_behavior)
+        if vision_behavior is not None
+        else None
+    )
+    return TriageAgent(
+        knowledge_store=store,
+        model_provider=provider,
+        vision_provider=vision_provider,
+        configuration=configuration,
+    )
+
+
+def _build_llm_provider(
+    *,
+    behavior: ProviderBehavior,
+    configuration: ScenicServiceConfiguration,
+) -> LLMProvider:
+    """按原有文本模型行为创建免费本地提供方。"""
+
+    if behavior == ProviderBehavior.DEMO:
+        return DemoLLMProvider(configuration=configuration)
+    if behavior == ProviderBehavior.INVALID_OUTPUT:
+        return DemoLLMProvider(
             configuration=configuration,
             simulate_invalid_output=True,
-        ),
-        ProviderBehavior.PROVIDER_ERROR: MockLLMProvider(
-            error_message="evaluation deliberately simulates a provider failure"
-        ),
-    }
-    return {
-        behavior: TriageAgent(
-            knowledge_store=store,
-            model_provider=provider,
-            configuration=configuration,
         )
-        for behavior, provider in providers.items()
+    if behavior == ProviderBehavior.PROVIDER_ERROR:
+        return MockLLMProvider(
+            error_message="evaluation deliberately simulates a provider failure"
+        )
+    raise ValueError(f"unsupported provider behavior: {behavior}")
+
+
+def _build_case_request(
+    *,
+    case: EvaluationCase,
+    image_fixture_directory: Path,
+) -> ServiceRequestInput:
+    """将图文案例的固定图片夹具临时编码为输入，不写回 YAML 或报告。"""
+
+    if case.image_fixture is None:
+        return case.request
+
+    image_path = image_fixture_directory / case.image_fixture
+    if not image_path.is_file():
+        raise EvaluationDatasetError(
+            f"image fixture does not exist: {image_path}"
+        )
+
+    media_type, _ = mimetypes.guess_type(image_path.name)
+    if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+        raise EvaluationDatasetError(
+            f"image fixture has unsupported media type: {image_path.name}"
+        )
+
+    try:
+        image_bytes = image_path.read_bytes()
+    except OSError as error:
+        raise EvaluationDatasetError(
+            f"failed to read image fixture {image_path}: {error}"
+        ) from error
+
+    payload = case.request.model_dump(mode="python")
+    payload["image"] = {
+        "media_type": media_type,
+        "data_base64": base64.b64encode(image_bytes).decode("ascii"),
+        "filename": image_path.name,
     }
+    return ServiceRequestInput.model_validate(payload)
 
 
 def compare_case_result(
@@ -203,6 +300,41 @@ def compare_case_result(
         mismatches.append(
             "action_plan count: expected "
             f"{expected.action_plan_count}, got {len(actual.action_plan)}"
+        )
+    if actual.diagnostics.vision_call_success != expected.vision_call_success:
+        mismatches.append(
+            "diagnostics.vision_call_success: expected "
+            f"{expected.vision_call_success!r}, got "
+            f"{actual.diagnostics.vision_call_success!r}"
+        )
+    if (
+        actual.diagnostics.vision_output_parse_success
+        != expected.vision_output_parse_success
+    ):
+        mismatches.append(
+            "diagnostics.vision_output_parse_success: expected "
+            f"{expected.vision_output_parse_success!r}, got "
+            f"{actual.diagnostics.vision_output_parse_success!r}"
+        )
+    actual_fusion_status = (
+        actual.multimodal_fusion.status
+        if actual.multimodal_fusion is not None
+        else None
+    )
+    if actual_fusion_status != expected.multimodal_fusion_status:
+        expected_value = (
+            expected.multimodal_fusion_status.value
+            if expected.multimodal_fusion_status is not None
+            else None
+        )
+        actual_value = (
+            actual_fusion_status.value
+            if actual_fusion_status is not None
+            else None
+        )
+        mismatches.append(
+            "multimodal_fusion.status: expected "
+            f"{expected_value!r}, got {actual_value!r}"
         )
     return mismatches
 

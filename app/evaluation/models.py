@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+import re
 
 from pydantic import Field, model_validator
 
 from app.schemas.models import (
     EventType,
+    MultimodalFusionStatus,
     ReviewReason,
     RiskLevel,
     ScenarioId,
@@ -26,6 +28,34 @@ class ProviderBehavior(str, Enum):
     PROVIDER_ERROR = "provider_error"
 
 
+class EvaluationCaseCategory(str, Enum):
+    """评测案例所属的演示类别，不代表真实业务的案件分类。"""
+
+    NORMAL = "normal"
+    MISSING_FIELDS = "missing_fields"
+    HIGH_RISK = "high_risk"
+    KNOWLEDGE_NOT_FOUND = "knowledge_not_found"
+    ADVERSARIAL = "adversarial"
+    PROVIDER_FAILURE = "provider_failure"
+    MULTIMODAL = "multimodal"
+
+
+class VisionBehavior(str, Enum):
+    """评测专用的确定性视觉观察类型，不会读取或识别图片像素。"""
+
+    DEMO = "demo"
+    LIGHTING_FAULT = "lighting_fault"
+    LIGHTING_NORMAL = "lighting_normal"
+    LOW_CONFIDENCE = "low_confidence"
+
+
+# 图文评测只能引用 data/scenic_service/evaluation_images 中的单个文件名。
+# 这样案例 YAML 不保存 Base64，也不能借文件名读取项目目录之外的内容。
+_IMAGE_FIXTURE_NAME_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:png|jpe?g|webp)"
+)
+
+
 class ExpectedCaseOutcome(StrictSchema):
     """一条演示案例需要验证的最小结果集合。"""
 
@@ -38,6 +68,10 @@ class ExpectedCaseOutcome(StrictSchema):
     model_call_success: bool | None
     model_output_parse_success: bool | None
     action_plan_count: int = Field(ge=0, le=10)
+    # 无图片时三个视觉预期都必须为 None；有图片时由 EvaluationCase 再检查组合。
+    vision_call_success: bool | None = None
+    vision_output_parse_success: bool | None = None
+    multimodal_fusion_status: MultimodalFusionStatus | None = None
 
     @model_validator(mode="after")
     def validate_review_expectation(self) -> "ExpectedCaseOutcome":
@@ -55,16 +89,77 @@ class EvaluationCase(StrictSchema):
 
     case_id: str = Field(min_length=1, max_length=100)
     description: str = Field(min_length=1, max_length=500)
+    category: EvaluationCaseCategory = EvaluationCaseCategory.NORMAL
     provider_behavior: ProviderBehavior = ProviderBehavior.DEMO
+    # 图片内容不放在 YAML 中；运行器会从固定夹具目录读取并临时编码。
+    image_fixture: str | None = Field(default=None, max_length=120)
+    vision_behavior: VisionBehavior | None = None
     request: ServiceRequestInput
     expected: ExpectedCaseOutcome
 
     @model_validator(mode="after")
-    def validate_request_id(self) -> "EvaluationCase":
-        """让案件编号与输入编号一致，便于报告和原始结果一一对应。"""
+    def validate_case_contract(self) -> "EvaluationCase":
+        """校验案件编号和图文夹具约束，避免评测数据绕过安全边界。"""
 
         if self.request.request_id != self.case_id:
             raise ValueError("request.request_id must match case_id")
+
+        expected = self.expected
+        has_vision_expectation = any(
+            value is not None
+            for value in (
+                expected.vision_call_success,
+                expected.vision_output_parse_success,
+                expected.multimodal_fusion_status,
+            )
+        )
+
+        if self.image_fixture is None:
+            # YAML 不允许内嵌图片 Base64，文本案例也不应声明视觉行为或视觉预期。
+            if self.request.image is not None:
+                raise ValueError("evaluation YAML must not embed image data")
+            if self.vision_behavior is not None or has_vision_expectation:
+                raise ValueError(
+                    "vision behavior and expectations require image_fixture"
+                )
+            if self.category == EvaluationCaseCategory.MULTIMODAL:
+                raise ValueError("multimodal category requires image_fixture")
+            return self
+
+        if not _IMAGE_FIXTURE_NAME_PATTERN.fullmatch(self.image_fixture):
+            raise ValueError(
+                "image_fixture must be a single supported image filename"
+            )
+        if self.request.image is not None:
+            raise ValueError("evaluation YAML must not embed image data")
+        if self.category != EvaluationCaseCategory.MULTIMODAL:
+            raise ValueError("image_fixture is only allowed for multimodal cases")
+        if self.vision_behavior is None:
+            raise ValueError("image_fixture requires vision_behavior")
+        if expected.vision_call_success is None:
+            raise ValueError("image_fixture requires vision_call_success expectation")
+
+        if expected.vision_call_success is False:
+            if (
+                expected.vision_output_parse_success is not None
+                or expected.multimodal_fusion_status is not None
+            ):
+                raise ValueError(
+                    "failed vision call must not expect parsing or fusion"
+                )
+        elif expected.vision_output_parse_success is None:
+            raise ValueError(
+                "successful vision call requires parsing expectation"
+            )
+        elif expected.vision_output_parse_success is False:
+            if expected.multimodal_fusion_status is not None:
+                raise ValueError(
+                    "failed vision parsing must not expect fusion status"
+                )
+        elif expected.multimodal_fusion_status is None:
+            raise ValueError(
+                "successful vision parsing requires fusion status expectation"
+            )
         return self
 
 
